@@ -71,7 +71,7 @@ The secret to getting a 1-3 second Next.js boot time is that **we don't wait for
 Here is the breakdown of how the `WorkerPool.js` and `worker.js` scripts pull this off locally.
 
 ### 1. The Worker Pool (The Manager)
-When you start `node server.js`, the `WorkerPool` immediately spins up a minimum number of workers (by default, 3) before you even open your browser. 
+When you start `node backend/server.js`, the `WorkerPool` immediately spins up a minimum number of workers (by default, 3) before you even open your browser. 
 
 * It assigns sequential ports to them (4000, 4001, 4002).
 * It listens to their console output. Once a worker prints `Ready` or `started server on`, the Manager marks that worker as "warm" (ready to be used).

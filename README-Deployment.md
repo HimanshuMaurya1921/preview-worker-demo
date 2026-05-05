@@ -13,7 +13,7 @@ Below are the step-by-step instructions to run this project across three differe
 Use this setup when actively developing or testing on your own machine.
 
 **Step 1: Configure Environment Variables**
-In the `client/` folder, ensure your `.env` contains:
+In the `frontend/` folder, ensure your `.env` contains:
 ```env
 VITE_API_URL=http://localhost:3000
 VITE_RUNNER_URL=http://localhost:3001
@@ -22,21 +22,21 @@ VITE_RUNNER_URL=http://localhost:3001
 **Step 2: Start the API Backend**
 Open Terminal 1 and run:
 ```bash
-node server.js
+node backend/server.js
 ```
 *(Runs on port 3000)*
 
 **Step 3: Start the Runner Orchestrator**
 Open Terminal 2 and run:
 ```bash
-node runner-server.js
+node worker/runner-server.js
 ```
 *(Runs on port 3001 and pre-warms the Next.js workers)*
 
 **Step 4: Start the Frontend**
 Open Terminal 3 and run:
 ```bash
-cd client
+cd frontend
 npm run dev
 ```
 *(Open http://localhost:5173 in your browser)*
@@ -48,10 +48,10 @@ Use this setup if your local machine is too slow to handle Next.js compilation, 
 
 **Step 1: Deploy Runner to EC2**
 1. Provision an Ubuntu EC2 instance (e.g., `t3.large` with 8GB RAM).
-2. Copy the `preview-system/` folder, `runner-server.js`, and `package.json` to the EC2 server.
+2. Copy the `worker/preview-system/` folder, `worker/runner-server.js`, and `package.json` to the EC2 server.
 3. Install dependencies (`npm install`) and start the runner using PM2:
    ```bash
-   pm2 start runner-server.js --name "ai-runner"
+   pm2 start worker/runner-server.js --name "ai-runner"
    ```
 
 **Step 2: Secure the EC2 Connection (AWS IAM / GCP Service Account)**
@@ -61,7 +61,7 @@ Instead of relying on public tunnels, secure the communication between your envi
 *(Note: If the EC2 instance is completely private, ensure your local browser is connected to the cloud VPC via VPN to view the iframe previews!)*
 
 **Step 3: Update Local Environment**
-On your local machine, update your `client/.env` to point to the secure internal IP or API Gateway URL:
+On your local machine, update your `frontend/.env` to point to the secure internal IP or API Gateway URL:
 ```env
 VITE_API_URL=http://localhost:3000
 VITE_RUNNER_URL=http://<secure-internal-ec2-ip-or-gateway>:3001
@@ -81,7 +81,7 @@ This is the ultimate production deployment. The lightweight stateless services r
 
 **Step 2: Deploy Runner Orchestrator to EC2**
 Exactly the same as Scenario 2.
-1. Deploy `runner-server.js` to EC2 via PM2.
+1. Deploy `worker/runner-server.js` to EC2 via PM2.
 2. Secure the EC2 instance within your VPC. Attach an AWS IAM Role to your K8s worker nodes (or GCP Service Account to GKE) to allow secure internal routing via VPC Peering or Internal Load Balancers.
 
 **Step 3: Configure Frontend Production Environment**

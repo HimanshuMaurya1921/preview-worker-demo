@@ -1,7 +1,7 @@
 # Dependencies
 node_modules/
-client/node_modules/
-preview-system/preview-worker/template/node_modules/
+frontend/node_modules/
+worker/preview-system/preview-worker/template/node_modules/
 
 # Environment Variables
 .env
@@ -12,8 +12,8 @@ preview-system/preview-worker/template/node_modules/
 
 # Build Outputs
 dist/
-client/dist/
-preview-system/preview-worker/template/.next/
+frontend/dist/
+worker/preview-system/preview-worker/template/.next/
 out/
 
 # Logs
@@ -45,4 +45,4 @@ Desktop.ini
 
 # Large files / Snapshots
 # If you don't want to track the big snapshot we made, uncomment the line below:
-# preview-system/preview-worker/node_modules-snapshot.tar.gz
+# worker/preview-system/preview-worker/node_modules-snapshot.tar.gz
