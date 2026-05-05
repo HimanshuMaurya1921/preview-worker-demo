@@ -1,19 +1,25 @@
 # Dependencies
 node_modules/
+<<<<<<< HEAD
 frontend/node_modules/
 worker/preview-system/preview-worker/template/node_modules/
+=======
+**/node_modules/
+>>>>>>> 2370a35 (seprated the microservices)
 
 # Environment Variables
 .env
-# .env.local
-# .env.development.local
-# .env.test.local
-# .env.production.local
+**/.env
 
 # Build Outputs
 dist/
+<<<<<<< HEAD
 frontend/dist/
 worker/preview-system/preview-worker/template/.next/
+=======
+**/dist/
+**/.next/
+>>>>>>> 2370a35 (seprated the microservices)
 out/
 
 # Logs
@@ -45,4 +51,8 @@ Desktop.ini
 
 # Large files / Snapshots
 # If you don't want to track the big snapshot we made, uncomment the line below:
+<<<<<<< HEAD
 # worker/preview-system/preview-worker/node_modules-snapshot.tar.gz
+=======
+# runner/preview-system/preview-worker/node_modules-snapshot.tar.gz
+>>>>>>> 2370a35 (seprated the microservices)

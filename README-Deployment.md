@@ -22,14 +22,24 @@ VITE_RUNNER_URL=http://localhost:3001
 **Step 2: Start the API Backend**
 Open Terminal 1 and run:
 ```bash
+<<<<<<< HEAD
 node backend/server.js
+=======
+cd backend
+node server.js
+>>>>>>> 2370a35 (seprated the microservices)
 ```
 *(Runs on port 3000)*
 
 **Step 3: Start the Runner Orchestrator**
 Open Terminal 2 and run:
 ```bash
+<<<<<<< HEAD
 node worker/runner-server.js
+=======
+cd runner
+node server.js
+>>>>>>> 2370a35 (seprated the microservices)
 ```
 *(Runs on port 3001 and pre-warms the Next.js workers)*
 
@@ -48,10 +58,18 @@ Use this setup if your local machine is too slow to handle Next.js compilation, 
 
 **Step 1: Deploy Runner to EC2**
 1. Provision an Ubuntu EC2 instance (e.g., `t3.large` with 8GB RAM).
+<<<<<<< HEAD
 2. Copy the `worker/preview-system/` folder, `worker/runner-server.js`, and `package.json` to the EC2 server.
 3. Install dependencies (`npm install`) and start the runner using PM2:
    ```bash
    pm2 start worker/runner-server.js --name "ai-runner"
+=======
+2. Copy the `runner/` folder to the EC2 server.
+3. Install dependencies (`npm install`) and start the runner using PM2:
+   ```bash
+   cd runner
+   pm2 start server.js --name "ai-runner"
+>>>>>>> 2370a35 (seprated the microservices)
    ```
 
 **Step 2: Secure the EC2 Connection (AWS IAM / GCP Service Account)**
@@ -81,7 +99,11 @@ This is the ultimate production deployment. The lightweight stateless services r
 
 **Step 2: Deploy Runner Orchestrator to EC2**
 Exactly the same as Scenario 2.
+<<<<<<< HEAD
 1. Deploy `worker/runner-server.js` to EC2 via PM2.
+=======
+1. Deploy the `runner/` folder to EC2 via PM2.
+>>>>>>> 2370a35 (seprated the microservices)
 2. Secure the EC2 instance within your VPC. Attach an AWS IAM Role to your K8s worker nodes (or GCP Service Account to GKE) to allow secure internal routing via VPC Peering or Internal Load Balancers.
 
 **Step 3: Configure Frontend Production Environment**
