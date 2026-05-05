@@ -20,20 +20,6 @@ export default function App() {
     }
   };
 
-  const handleGenerateReact = async () => {
-    setIsGenerating(true);
-    try {
-      const apiUrl = import.meta.env.VITE_API_URL || 'http://localhost:3000';
-      const res = await fetch(`${apiUrl}/react-code`);
-      const data = await res.json();
-      setFiles(data.files || data);
-    } catch (err) {
-      console.error(err);
-    } finally {
-      setIsGenerating(false);
-    }
-  };
-
   return (
     <div className="grid grid-cols-2 h-screen">
       <div className="p-6 bg-slate-50 flex flex-col items-start gap-4">
@@ -47,13 +33,6 @@ export default function App() {
             disabled={isGenerating}
           >
             {isGenerating ? 'Loading...' : 'Generate Next.js Demo'}
-          </button>
-          <button 
-            onClick={handleGenerateReact}
-            className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700"
-            disabled={isGenerating}
-          >
-            {isGenerating ? 'Loading...' : 'Generate React Demo'}
           </button>
         </div>
       </div>
