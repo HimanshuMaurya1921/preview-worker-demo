@@ -41,7 +41,7 @@ export default function App() {
         <PreviewFrame
           projectId={projectId}
           files={files}
-          apiBase={import.meta.env.VITE_RUNNER_URL || 'http://localhost:3001'}
+          apiBase={import.meta.env.VITE_WORKER_URL || 'http://localhost:3001'}
           className="border-0"
         />
       </div>
