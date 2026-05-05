@@ -9,7 +9,8 @@ export default function App() {
   const handleGenerateNext = async () => {
     setIsGenerating(true);
     try {
-      const res = await fetch('http://localhost:3000/next-code');
+      const apiUrl = import.meta.env.VITE_API_URL || 'http://localhost:3000';
+      const res = await fetch(`${apiUrl}/next-code`);
       const data = await res.json();
       setFiles(data.files || data);
     } catch (err) {
@@ -22,7 +23,8 @@ export default function App() {
   const handleGenerateReact = async () => {
     setIsGenerating(true);
     try {
-      const res = await fetch('http://localhost:3000/react-code');
+      const apiUrl = import.meta.env.VITE_API_URL || 'http://localhost:3000';
+      const res = await fetch(`${apiUrl}/react-code`);
       const data = await res.json();
       setFiles(data.files || data);
     } catch (err) {
@@ -60,7 +62,7 @@ export default function App() {
         <PreviewFrame
           projectId={projectId}
           files={files}
-          apiBase="http://localhost:3000"
+          apiBase={import.meta.env.VITE_RUNNER_URL || 'http://localhost:3001'}
           className="border-0"
         />
       </div>
