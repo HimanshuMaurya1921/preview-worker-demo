@@ -101,3 +101,21 @@ VITE_WORKER_URL=https://worker-alb.yourdomain.com
 3. Frontend injects code via `POST` directly to `worker.yourdomain.com` (EC2 Worker).
 4. EC2 Worker replies with a temporary proxy path (e.g., `/api/preview/proxy/w-abcd/`).
 5. Iframe loads `https://worker.yourdomain.com/api/preview/proxy/w-abcd/` and displays the live Next.js preview safely compiled on the EC2 machine!
+
+---
+
+## 🛡️ EC2 Worker Security & OS Hardening
+
+If you are running the `worker` orchestrator on an EC2 instance (Scenario 2 or 3), you are executing untrusted AI-generated code directly on the host OS via child processes. To prevent malicious code from compromising your server or cloud environment, you **must** implement the following OS-level restrictions:
+
+1. **Dedicated Unprivileged User:** Create a dedicated user (e.g., `ai-sandbox-user`) with **zero `sudo` privileges**. Run the worker orchestrator (`server.js`) as this user so any shell commands executed by the AI code are restricted.
+2. **Block AWS Metadata Access:** Use `iptables` to block the sandbox user from querying the AWS Instance Metadata Service (`169.254.169.254`). This prevents the generated code from stealing the EC2 instance's IAM credentials.
+   ```bash
+   sudo iptables -A OUTPUT -m owner --uid-owner ai-sandbox-user -d 169.254.169.254 -j DROP
+   ```
+3. **File System Restrictions:** Ensure the `ai-sandbox-user` only has read/write access to the `/worker/` directory. They should have no read access to sensitive OS files (e.g., `/etc/passwd`, `/var/log`).
+4. **Resource Limits (`ulimit`):** Prevent the AI from accidentally crashing the EC2 instance (e.g., via fork bombs or memory leaks) by configuring OS limits for the sandbox user:
+   * **Max Processes (`ulimit -u`):** Cap child processes.
+   * **Max Memory (`ulimit -m` / `ulimit -v`):** Cap RAM usage per worker.
+   * **Max File Size (`ulimit -f`):** Prevent disk exhaustion.
+5. **Internal Network Blocking:** Block outbound traffic to any internal VPC IP ranges (e.g., `10.0.x.x`) to prevent the code from scanning or accessing internal databases and APIs.
