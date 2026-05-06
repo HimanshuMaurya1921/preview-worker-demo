@@ -59,9 +59,26 @@ Use this setup if your local machine is too slow to handle Next.js compilation, 
 4. Install dependencies (`npm install`) and start the worker using PM2:
    ```bash
    cd worker
+   npm install -g pm2  #-g for global installation  
    pm2 start server.js --name "ai-worker"
    ```
+```
+        PM2 is a Production Process Manager for Node.js applications
+                     with a built-in Load Balancer.
 
+                Start and Daemonize any application:
+                $ pm2 start app.js
+
+                Load Balance 4 instances of api.js:
+                $ pm2 start api.js -i 4
+
+                Monitor in production:
+                $ pm2 monitor
+
+                Make pm2 auto-boot at server restart:
+                $ pm2 startup
+
+```                
 **Step 2: Secure the EC2 Connection (AWS IAM / GCP Service Account)**
 Instead of relying on public tunnels, secure the communication between your environments using cloud-native identity:
 * **AWS:** Assign an IAM Role to your local/K8s environment with policies that allow it to securely invoke or access the EC2 instance (e.g., via AWS API Gateway or an internal VPC peering setup if using a VPN).
