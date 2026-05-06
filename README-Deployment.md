@@ -50,8 +50,13 @@ Use this setup if your local machine is too slow to handle Next.js compilation, 
 
 **Step 1: Deploy Worker to EC2**
 1. Provision an Ubuntu EC2 instance (e.g., `t3.large` with 8GB RAM).
-2. Copy the `worker/` folder to the EC2 server.
-3. Install dependencies (`npm install`) and start the worker using PM2:
+2. SSH into your instance. **WARNING:** Do not run the worker under the default user (e.g., `ubuntu` or `root`) for security reasons. Create a dedicated non-root user:
+   ```bash
+   sudo adduser --disabled-password --gecos "" ai-worker-user
+   sudo su - ai-worker-user
+   ```
+3. Copy the `worker/` folder to the EC2 server (ensure it is accessible and owned by `ai-worker-user`).
+4. Install dependencies (`npm install`) and start the worker using PM2:
    ```bash
    cd worker
    pm2 start server.js --name "ai-worker"
