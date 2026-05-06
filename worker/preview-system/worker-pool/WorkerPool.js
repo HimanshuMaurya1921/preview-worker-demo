@@ -14,6 +14,9 @@ class WorkerPool {
     this.usedPorts = new Set();
     this.evictionTimer = null;
 
+    // Mutex for acquireWorker to prevent race conditions
+    this._acquireLock = Promise.resolve();
+
     // Create a pool of reusable ports
     for (let i = 0; i < 500; i++) {
       this.availablePorts.push(this.portBase + i);
@@ -62,12 +65,6 @@ class WorkerPool {
   }
 
   async spawnWorker() {
-    // Check if we already have too many workers booting or warm
-    let activeCount = 0;
-    for (const [_, w] of this.workers) {
-      if (w.status === 'booting' || w.status === 'warm') activeCount++;
-    }
-    
     if (this.workers.size >= this.maxWorkers) {
        throw new Error('Worker pool at maximum capacity');
     }
@@ -170,26 +167,40 @@ class WorkerPool {
   }
 
   async acquireWorker() {
-    if (this.warmQueue.length > 0) {
-      const workerId = this.warmQueue.shift();
-      const worker = this.workers.get(workerId);
-      worker.status = 'busy';
-      worker.lastActive = Date.now();
+    // Simple mutex to prevent concurrent acquireWorker races
+    let resolveLock;
+    const lockPromise = new Promise(r => resolveLock = r);
+    const previousLock = this._acquireLock;
+    this._acquireLock = lockPromise;
 
-      this.checkReplenish();
-      return worker;
+    try {
+      await previousLock;
+
+      if (this.warmQueue.length > 0) {
+        const workerId = this.warmQueue.shift();
+        const worker = this.workers.get(workerId);
+        worker.status = 'busy';
+        worker.lastActive = Date.now();
+
+        this.checkReplenish();
+        return worker;
+      }
+
+      if (this.workers.size < this.maxWorkers) {
+        const workerId = await this.spawnWorker();
+        // The worker was added to warmQueue by spawnWorker, but since we are acquiring it,
+        // we must remove it from warmQueue immediately.
+        this.warmQueue = this.warmQueue.filter(id => id !== workerId);
+        const worker = this.workers.get(workerId);
+        worker.status = 'busy';
+        worker.lastActive = Date.now();
+        return worker;
+      }
+
+      throw new Error('Worker pool at capacity');
+    } finally {
+      resolveLock();
     }
-
-    if (this.workers.size < this.maxWorkers) {
-      const workerId = await this.spawnWorker();
-      this.warmQueue = this.warmQueue.filter(id => id !== workerId);
-      const worker = this.workers.get(workerId);
-      worker.status = 'busy';
-      worker.lastActive = Date.now();
-      return worker;
-    }
-
-    throw new Error('Worker pool at capacity');
   }
 
   async releaseWorker(workerId) {

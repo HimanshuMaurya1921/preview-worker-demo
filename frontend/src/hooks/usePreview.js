@@ -21,6 +21,14 @@ export function usePreview({ projectId, files, apiBase = '', onReady }) {
   const [error, setError] = useState(null);
 
   const prevFilesRef = useRef('');
+  const workerIdRef = useRef(null);
+  const apiBaseRef = useRef(apiBase);
+
+  // Sync state to refs for reliable cleanup
+  useEffect(() => {
+    workerIdRef.current = workerId;
+    apiBaseRef.current = apiBase;
+  }, [workerId, apiBase]);
 
   useEffect(() => {
     const currentFilesStr = stableStringify(files);
@@ -63,10 +71,11 @@ export function usePreview({ projectId, files, apiBase = '', onReady }) {
           setLoading(false);
           if (onReady) onReady(url);
         } else {
+          // Pass projectId for ownership verification on the server
           await fetch(`${apiBase}/api/preview/${workerId}`, {
             method: 'PATCH',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ files })
+            body: JSON.stringify({ files, projectId })
           });
         }
       } catch (err) {
@@ -75,23 +84,27 @@ export function usePreview({ projectId, files, apiBase = '', onReady }) {
       }
     };
 
-    const timeout = setTimeout(startOrUpdate, 600);
+    const timeout = setTimeout(startOrUpdate, 800); // 800ms debounce
     return () => clearTimeout(timeout);
-  }, [files, workerId, projectId, apiBase]);
+  }, [files, workerId, projectId, apiBase, onReady]);
 
+  // Cleanup effect — runs ONLY on unmount
   useEffect(() => {
     return () => {
-      if (workerId) {
-        const cleanupUrl = `${apiBase}/api/preview/${workerId}/delete`;
+      // Use refs to ensure we have the most up-to-date values for cleanup without re-subscribing
+      const currentWorkerId = workerIdRef.current;
+      const currentApiBase = apiBaseRef.current;
+      
+      if (currentWorkerId) {
+        const cleanupUrl = `${currentApiBase}/api/preview/${currentWorkerId}/delete`;
         if (navigator.sendBeacon) {
-          // sendBeacon is more reliable on tab close
           navigator.sendBeacon(cleanupUrl);
         } else {
           fetch(cleanupUrl, { method: 'POST', keepalive: true }).catch(() => {});
         }
       }
     };
-  }, [workerId, apiBase]);
+  }, []); // empty array — intentional
 
   return { previewUrl, loading, error };
 }

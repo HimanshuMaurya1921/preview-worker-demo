@@ -1,9 +1,33 @@
 const express = require('express');
 const { createProxyMiddleware } = require('http-proxy-middleware');
+const fs = require('fs');
+const path = require('path');
+
+const SESSION_FILE = path.join(process.cwd(), '.sessions.json');
 
 module.exports = function(pool) {
   const router = express.Router();
-  const sessions = new Map();
+  
+  // Initialize sessions from disk if available
+  let sessions = new Map();
+  try {
+    if (fs.existsSync(SESSION_FILE)) {
+      const data = JSON.parse(fs.readFileSync(SESSION_FILE, 'utf8'));
+      sessions = new Map(Object.entries(data));
+      console.log(`[Orchestrator] Restored ${sessions.size} sessions from disk.`);
+    }
+  } catch (err) {
+    console.error('[Orchestrator] Failed to restore sessions:', err.message);
+  }
+
+  const saveSessions = () => {
+    try {
+      const data = Object.fromEntries(sessions);
+      fs.writeFileSync(SESSION_FILE, JSON.stringify(data, null, 2));
+    } catch (err) {
+      console.error('[Orchestrator] Failed to save sessions:', err.message);
+    }
+  };
 
   router.post('/start', async (req, res) => {
     const { projectId, files } = req.body;
@@ -13,11 +37,14 @@ module.exports = function(pool) {
       if (projectId && sessions.has(projectId)) {
         const oldWorkerId = sessions.get(projectId);
         const oldWorker = pool.getWorker(oldWorkerId);
+        
+        // If the worker is still there, recycle it
         if (oldWorker) {
           console.log(`[Session] Recycling old worker ${oldWorkerId} for project ${projectId}`);
           await pool.releaseWorker(oldWorkerId);
         }
         sessions.delete(projectId);
+        saveSessions();
       }
 
       const worker = await pool.acquireWorker();
@@ -38,6 +65,7 @@ module.exports = function(pool) {
 
       if (projectId) {
         sessions.set(projectId, worker.id);
+        saveSessions();
       }
 
       res.json({
@@ -52,11 +80,16 @@ module.exports = function(pool) {
 
   router.patch('/:workerId', async (req, res) => {
     const { workerId } = req.params;
-    const { files } = req.body;
+    const { files, projectId } = req.body;
     const worker = pool.getWorker(workerId);
     
     if (!worker || worker.status !== 'busy') {
       return res.status(404).json({ error: 'Worker not found or not busy' });
+    }
+
+    // Verify session ownership if projectId is provided
+    if (projectId && sessions.get(projectId) !== workerId) {
+      return res.status(403).json({ error: 'Project ID does not match this worker session.' });
     }
 
     try {
@@ -77,17 +110,19 @@ module.exports = function(pool) {
     }
   });
 
-  // Support both DELETE and POST (for sendBeacon)
   const cleanupHandler = async (req, res) => {
     const { workerId } = req.params;
     await pool.releaseWorker(workerId);
 
+    let changed = false;
     for (const [pid, wid] of sessions) {
       if (wid === workerId) {
         sessions.delete(pid);
+        changed = true;
         break;
       }
     }
+    if (changed) saveSessions();
 
     res.json({ ok: true });
   };

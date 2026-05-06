@@ -13,11 +13,16 @@ if (!workerId || !port) {
   process.exit(1);
 }
 
-const nextPort = port + 10000; // Next.js internal port
-if (nextPort > 65535) {
-  console.error(`[Worker ${workerId}] Port overflow: nextPort ${nextPort} is too high`);
+// Configurable port offset for Next.js internal server
+const NEXT_PORT_OFFSET = parseInt(process.env.NEXT_PORT_OFFSET || '10000', 10);
+
+// Validate port boundary before assignment
+if (port + NEXT_PORT_OFFSET > 65535) {
+  console.error(`[Worker ${workerId}] Port overflow: port ${port} + offset ${NEXT_PORT_OFFSET} exceeds 65535`);
   process.exit(1);
 }
+
+const nextPort = port + NEXT_PORT_OFFSET;
 
 async function prepareWorkspace(workDir) {
   await fs.mkdir(workDir, { recursive: true });
@@ -105,25 +110,27 @@ async function main() {
       const flatten = (obj, prefix = '') => {
         for (const [key, value] of Object.entries(obj)) {
           const currentPath = prefix ? path.join(prefix, key) : key;
-          if (value && typeof value === 'object') {
-            if (value.file && value.file.contents !== undefined) {
+          
+          if (typeof value === 'string') {
+            totalSize += Buffer.byteLength(value, 'utf8');
+            flatFiles[currentPath] = value;
+          } else if (value && typeof value === 'object') {
+            if (value.file && typeof value.file.contents === 'string') {
               const content = value.file.contents;
               totalSize += Buffer.byteLength(content, 'utf8');
               flatFiles[currentPath] = content;
             } else if (value.directory) {
               flatten(value.directory, currentPath);
-            } else if (value.contents !== undefined) {
+            } else if (typeof value.contents === 'string') {
               const content = value.contents;
               totalSize += Buffer.byteLength(content, 'utf8');
               flatFiles[currentPath] = content;
             } else {
-              const content = JSON.stringify(value);
-              totalSize += Buffer.byteLength(content, 'utf8');
-              flatFiles[currentPath] = content;
+              // Instead of silent JSON.stringify, throw an error for malformed objects
+              throw new Error(`Invalid file structure at "${currentPath}": Expected string content or directory object.`);
             }
-          } else if (typeof value === 'string') {
-            totalSize += Buffer.byteLength(value, 'utf8');
-            flatFiles[currentPath] = value;
+          } else {
+             throw new Error(`Invalid file type at "${currentPath}": Expected string or object.`);
           }
         }
       };
@@ -136,7 +143,13 @@ async function main() {
       }
 
       for (const [filePath, content] of Object.entries(flatFiles)) {
-        const fullPath = path.join(workDir, filePath);
+        const fullPath = path.resolve(workDir, filePath);
+        
+        // Security check: ensure the file stays within the workspace
+        if (!fullPath.startsWith(path.resolve(workDir) + path.sep)) {
+          throw new Error(`Path traversal attempt blocked: "${filePath}"`);
+        }
+
         await fs.mkdir(path.dirname(fullPath), { recursive: true });
         await fs.writeFile(fullPath, content);
       }
@@ -144,7 +157,7 @@ async function main() {
       res.json({ ok: true });
     } catch (e) {
       console.error('Injection error:', e);
-      res.status(500).json({ error: e.message });
+      res.status(400).json({ error: e.message });
     }
   });
 

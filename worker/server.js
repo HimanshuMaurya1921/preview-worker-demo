@@ -20,14 +20,18 @@ pool.init()
   .catch(err => console.error('[Pool Initialization Error]', err));
 
 // Next.js asset routing fallback for API Gateway/CloudFront Proxy (Production)
+// Security: Verifies the workerId in the Referer is currently assigned and active.
 app.use('/_next', (req, res, next) => {
   const referer = req.get('referer');
   if (referer) {
+    // Extract worker ID from the proxy path in the referer
     const match = referer.match(/\/api\/preview\/proxy\/(w-[a-z0-9-]+)/);
     if (match) {
       const workerId = match[1];
       const worker = pool.getWorker(workerId);
-      if (worker) {
+      
+      // Only proxy if the worker is explicitly assigned to a session
+      if (worker && worker.status === 'busy') {
         return createProxyMiddleware({ 
           target: `http://localhost:${worker.port}`, 
           changeOrigin: true,
