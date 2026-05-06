@@ -61,6 +61,8 @@ Use this setup if your local machine is too slow to handle Next.js compilation, 
    cd worker
    npm install -g pm2  #-g for global installation  
    pm2 start server.js --name "ai-worker"
+   #optional 
+   pm2 start server.js --name "ai-worker" --max-memory-restart 2500M
    ```
 ```
         PM2 is a Production Process Manager for Node.js applications
@@ -79,6 +81,23 @@ Use this setup if your local machine is too slow to handle Next.js compilation, 
                 $ pm2 startup
 
 ```                
+#3 extra thing if using 4 gb ram instance , update accroding your need for 8 gb  or more 
+```bash
+# Create swap (2 GB recommended) 
+# run this command with ubuntu user not with ai-worker-user 
+sudo fallocate -l 2G /swapfile
+sudo chmod 600 /swapfile
+sudo mkswap /swapfile
+sudo swapon /swapfile
+
+# Make it permanent:
+echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
+
+# Verify swap
+free -h
+
+
+```
 **Step 2: Secure the EC2 Connection (AWS IAM / GCP Service Account)**
 Instead of relying on public tunnels, secure the communication between your environments using cloud-native identity:
 * **AWS:** Assign an IAM Role to your local/K8s environment with policies that allow it to securely invoke or access the EC2 instance (e.g., via AWS API Gateway or an internal VPC peering setup if using a VPN).

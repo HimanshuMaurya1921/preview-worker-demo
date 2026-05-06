@@ -126,8 +126,25 @@ async function main() {
       }
     });
 
-    nextProc.on('exit', () => process.exit(0));
+    nextProc.stderr.on('data', (data) => console.error(`[Next.js Error] ${data.toString()}`));
+
+    nextProc.on('exit', (code) => {
+      process.exit(code !== null ? code : 1);
+    });
+
+    nextProc.on('error', (err) => {
+      console.error(`[Next.js Spawn Error]`, err);
+      process.exit(1);
+    });
   });
+
+  const fsSync = require('fs');
+  const cleanup = () => {
+    try { fsSync.rmSync(workDir, { recursive: true, force: true }); } catch (e) {}
+  };
+  process.on('exit', cleanup);
+  process.on('SIGINT', () => process.exit(0));
+  process.on('SIGTERM', () => process.exit(0));
 }
 
 main().catch(console.error);
