@@ -83,19 +83,36 @@ class WorkerPool {
           console.error(`[${workerId} stderr]`, data.toString());
         }
       });
-
       child.on('exit', (code) => {
         console.log(`[${workerId}] Exited with code ${code}`);
         this.workers.delete(workerId);
         this.releasePort(port);
-
         this.warmQueue = this.warmQueue.filter(id => id !== workerId);
-        if (this.warmQueue.length < this.minWorkers) {
-          // Add a 1 second delay before respawning to prevent tight infinite loops
-          setTimeout(() => this.spawnWorker(), 1000);
-        }
+        this.checkReplenish();
       });
     });
+  }
+
+  checkReplenish() {
+    // Count warm + booting workers (exclude busy) to decide if we need to replenish
+    let warmAndBooting = 0;
+    for (const [_, w] of this.workers) {
+      if (w.status === 'warm' || w.status === 'booting') warmAndBooting++;
+    }
+
+    if (warmAndBooting < this.minWorkers && this.workers.size < this.maxWorkers) {
+      // Small delay to prevent tight loops and allow cleanup to finish
+      setTimeout(() => {
+        // Re-check before spawning
+        let currentWarmAndBooting = 0;
+        for (const [_, w] of this.workers) {
+          if (w.status === 'warm' || w.status === 'booting') currentWarmAndBooting++;
+        }
+        if (currentWarmAndBooting < this.minWorkers && this.workers.size < this.maxWorkers) {
+          this.spawnWorker();
+        }
+      }, 1500);
+    }
   }
 
   async acquireWorker() {
@@ -105,7 +122,7 @@ class WorkerPool {
       worker.status = 'busy';
       worker.lastActive = Date.now();
 
-      this.spawnWorker(); // Replenish
+      this.checkReplenish();
       return worker;
     }
 
@@ -127,14 +144,21 @@ class WorkerPool {
 
     console.log(`[${workerId}] Releasing worker...`);
 
-    worker.process.kill();
-    this.workers.delete(workerId);
-    this.releasePort(worker.port);
-    this.warmQueue = this.warmQueue.filter(id => id !== workerId);
+    return new Promise((resolve) => {
+      const cleanup = () => {
+        this.workers.delete(workerId);
+        this.releasePort(worker.port);
+        this.warmQueue = this.warmQueue.filter(id => id !== workerId);
+        resolve();
+      };
 
-    if (this.warmQueue.length < this.minWorkers) {
-      setTimeout(() => this.spawnWorker(), 1000);
-    }
+      if (worker.process.killed || worker.process.exitCode !== null) {
+        cleanup();
+      } else {
+        worker.process.once('exit', cleanup);
+        worker.process.kill();
+      }
+    });
   }
 
   getWorker(workerId) {

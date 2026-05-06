@@ -4,6 +4,9 @@ const pool = require('../worker-pool/WorkerPool');
 
 const router = express.Router();
 
+// Session tracking: maps projectId → workerId to recycle workers for the same user
+const sessions = new Map();
+
 pool.init().catch(console.error);
 
 router.post('/start', async (req, res) => {
@@ -11,6 +14,17 @@ router.post('/start', async (req, res) => {
   if (!files) return res.status(400).json({ error: 'Files are required' });
 
   try {
+    // If this project already has a worker, release it first to free tmpfs space
+    if (projectId && sessions.has(projectId)) {
+      const oldWorkerId = sessions.get(projectId);
+      const oldWorker = pool.getWorker(oldWorkerId);
+      if (oldWorker) {
+        console.log(`[Session] Recycling old worker ${oldWorkerId} for project ${projectId}`);
+        await pool.releaseWorker(oldWorkerId);
+      }
+      sessions.delete(projectId);
+    }
+
     const worker = await pool.acquireWorker();
     
     // Node.js fetch is available in v18+
@@ -23,6 +37,11 @@ router.post('/start', async (req, res) => {
     if (!response.ok) {
       const text = await response.text();
       throw new Error(`Failed to inject files into worker: ${response.status} ${text}`);
+    }
+
+    // Track this session
+    if (projectId) {
+      sessions.set(projectId, worker.id);
     }
 
     res.json({
@@ -62,6 +81,15 @@ router.patch('/:workerId', async (req, res) => {
 router.delete('/:workerId', async (req, res) => {
   const { workerId } = req.params;
   await pool.releaseWorker(workerId);
+
+  // Clean up the session entry for this worker
+  for (const [pid, wid] of sessions) {
+    if (wid === workerId) {
+      sessions.delete(pid);
+      break;
+    }
+  }
+
   res.json({ ok: true });
 });
 

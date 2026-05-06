@@ -15,8 +15,7 @@ if (!workerId || !port) {
 
 const nextPort = port + 10000; // Next.js internal port
 
-async function prepareWorkspace() {
-  const workDir = path.join(os.tmpdir(), `ai-studio-${workerId}`);
+async function prepareWorkspace(workDir) {
   await fs.mkdir(workDir, { recursive: true });
 
   const templateDir = path.join(__dirname, 'template');
@@ -28,6 +27,8 @@ async function prepareWorkspace() {
     await execCommand(`tar -xzf ${snapshotPath} -C ${workDir}`);
   } catch (e) {
     // Snapshot might not exist locally yet
+    console.error(`[Worker ${workerId}] Snapshot extraction failed:`, e.message);
+    throw e; // Throw so main() can catch and exit
   }
   
   return workDir;
@@ -62,7 +63,25 @@ function execCommand(command) {
 }
 
 async function main() {
-  const workDir = await prepareWorkspace();
+  const workDir = path.join(os.tmpdir(), `ai-studio-${workerId}`);
+
+  // Register cleanup immediately so it runs even if prepareWorkspace fails
+  const fsSync = require('fs');
+  const cleanup = () => {
+    try {
+      if (fsSync.existsSync(workDir)) {
+        fsSync.rmSync(workDir, { recursive: true, force: true });
+      }
+    } catch (e) {
+      // Ignore cleanup errors
+    }
+  };
+
+  process.on('exit', cleanup);
+  process.on('SIGINT', () => process.exit(0));
+  process.on('SIGTERM', () => process.exit(0));
+
+  await prepareWorkspace(workDir);
   const app = express();
   app.use(express.json({ limit: '50mb' }));
 
@@ -137,14 +156,9 @@ async function main() {
       process.exit(1);
     });
   });
-
-  const fsSync = require('fs');
-  const cleanup = () => {
-    try { fsSync.rmSync(workDir, { recursive: true, force: true }); } catch (e) {}
-  };
-  process.on('exit', cleanup);
-  process.on('SIGINT', () => process.exit(0));
-  process.on('SIGTERM', () => process.exit(0));
 }
 
-main().catch(console.error);
+main().catch(err => {
+  console.error('[Worker Fatal Error]', err);
+  process.exit(1);
+});

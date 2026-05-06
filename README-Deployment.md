@@ -1,5 +1,8 @@
 # AI Studio: Deployment & Execution Guide
 
+> [!NOTE]
+> For a deep dive into the internal System Design and Architecture of the Worker Pool, see **[README-WORKER.md](./README-WORKER.md)**.
+
 This project features a scalable microservice architecture separated into three core components:
 1. **Frontend (React/Vite)**: The user interface containing the `<PreviewFrame>`.
 2. **API Backend (Node.js)**: The core server handling code generation/mocks.
@@ -48,71 +51,127 @@ npm run dev
 ## ☁️ Scenario 2: Local Development with an EC2 Worker
 Use this setup if your local machine is too slow to handle Next.js compilation, and you want to offload the heavy Worker Pool to a remote EC2 server while keeping your frontend and backend local.
 
-**Step 1: Deploy Worker to EC2**
+You have **two options** for running the worker on EC2:
+
+### Option A: Bare-Metal with PM2 (Simple, for quick testing)
+
+Best for developers who want to quickly spin up a worker without Docker.
+
+**Step 1: Provision & Secure EC2**
 1. Provision an Ubuntu EC2 instance (e.g., `t3.large` with 8GB RAM).
 2. SSH into your instance. **WARNING:** Do not run the worker under the default user (e.g., `ubuntu` or `root`) for security reasons. Create a dedicated non-root user:
    ```bash
    sudo adduser --disabled-password --gecos "" ai-worker-user
    sudo su - ai-worker-user
    ```
-3. Copy the `worker/` folder to the EC2 server (ensure it is accessible and owned by `ai-worker-user`).
-4. Install dependencies (`npm install`) and start the worker using PM2:
+3. (Optional) Add swap space if using a 4GB RAM instance:
+   ```bash
+   # Run these commands as the ubuntu user, NOT ai-worker-user
+   sudo fallocate -l 2G /swapfile
+   sudo chmod 600 /swapfile
+   sudo mkswap /swapfile
+   sudo swapon /swapfile
+   echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
+   free -h  # Verify swap
+   ```
+
+**Step 2: Deploy & Start**
+1. Copy the `worker/` folder to the EC2 server (ensure it is owned by `ai-worker-user`).
+2. Install dependencies and start with PM2:
    ```bash
    cd worker
-   npm install -g pm2  #-g for global installation  
-   pm2 start server.js --name "ai-worker"
-   #optional 
+   npm install
+   npm install -g pm2
    pm2 start server.js --name "ai-worker" --max-memory-restart 2500M
+   pm2 startup   # Auto-start on reboot
+   pm2 save
    ```
-```
-        PM2 is a Production Process Manager for Node.js applications
-                     with a built-in Load Balancer.
+3. Monitor logs:
+   ```bash
+   pm2 logs ai-worker -f
+   ```
 
-                Start and Daemonize any application:
-                $ pm2 start app.js
+---
 
-                Load Balance 4 instances of api.js:
-                $ pm2 start api.js -i 4
+### Option B: Docker Container (Recommended for EC2)
 
-                Monitor in production:
-                $ pm2 monitor
+Best for production-like deployments with automatic memory limits, health checks, and self-healing restarts.
 
-                Make pm2 auto-boot at server restart:
-                $ pm2 startup
+**Step 1: Provision EC2 & Install Docker**
+1. Provision an Ubuntu EC2 instance (e.g., `t3.large` with 8GB RAM).
+2. Install Docker and Docker Compose:
+   ```bash
+   sudo apt-get update
+   sudo apt-get install -y docker.io docker-compose-plugin
+   sudo usermod -aG docker ubuntu
+   # Log out and back in for group changes to take effect
+   ```
 
-```                
-#3 extra thing if using 4 gb ram instance , update accroding your need for 8 gb  or more 
-```bash
-# Create swap (2 GB recommended) 
-# run this command with ubuntu user not with ai-worker-user 
-sudo fallocate -l 2G /swapfile
-sudo chmod 600 /swapfile
-sudo mkswap /swapfile
-sudo swapon /swapfile
+**Step 2: Deploy & Start**
+1. Copy the `worker/` folder to the EC2 server.
+2. Build and start the container:
+   ```bash
+   cd worker
+   docker compose up -d --build
+   ```
+   This single command will:
+   - Build the Docker image with a **non-root** user.
+   - Start the container with a **3 GB memory limit** (hard cap — the container is OOM-killed if it exceeds this).
+   - Mount `/tmp` as a **RAM-backed tmpfs** (2 GB) to prevent the disk ENOSPC crash loop.
+   - Enable **auto-restart** (`unless-stopped`) — the container will self-heal after crashes and survive EC2 reboots.
+   - Run a **health check** every 30 seconds against the `/health` endpoint.
 
-# Make it permanent:
-echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
+3. Monitor logs:
+   ```bash
+   docker compose logs -f ai-worker
+   ```
 
-# Verify swap
-free -h
+4. To adjust the memory limit, edit `docker-compose.yml`:
+   ```yaml
+   deploy:
+     resources:
+       limits:
+         memory: 2.5g   # Change to 2.5 GB for smaller instances
+   ```
 
+5. Useful commands:
+   ```bash
+   docker compose ps          # Check status & health
+   docker compose restart     # Restart the worker
+   docker compose down        # Stop and remove the container
+   docker compose up -d       # Start again (no rebuild needed)
+   docker stats ai-worker-pool  # Live CPU/memory usage
+   ```
 
-```
-**Step 2: Secure the EC2 Connection (AWS IAM / GCP Service Account)**
+---
+
+### Common Steps (Both Options)
+
+**Step 3: Configure EC2 Security Group**
+Ensure the following inbound rules are set on your EC2 Security Group:
+| Port        | Protocol | Source          | Purpose                        |
+|-------------|----------|-----------------|--------------------------------|
+| 22          | TCP      | Your IP         | SSH access                     |
+| 3001        | TCP      | Your IP / 0.0.0.0/0 | Worker Orchestrator API    |
+| 4000–4500   | TCP      | Your IP         | Direct Next.js worker access (DEV mode only) |
+
+**Step 4: Secure the EC2 Connection (AWS IAM / GCP Service Account)**
 Instead of relying on public tunnels, secure the communication between your environments using cloud-native identity:
 * **AWS:** Assign an IAM Role to your local/K8s environment with policies that allow it to securely invoke or access the EC2 instance (e.g., via AWS API Gateway or an internal VPC peering setup if using a VPN).
 * **GCP:** Use a Service Account attached to your GKE cluster with Identity-Aware Proxy (IAP) or VPC peering to securely route traffic to the Compute Engine instance.
-*(Note: If the EC2 instance is completely private, ensure your local browser is connected to the cloud VPC via VPN to view the iframe previews!)*
 
-**Step 3: Update Local Environment**
-On your local machine, update your `frontend/.env` to point to the secure internal IP or API Gateway URL:
+> ⚠️ If the EC2 instance is completely private, ensure your local browser is connected to the cloud VPC via VPN to view the iframe previews!
+
+**Step 5: Update Local Environment**
+On your local machine, update your `frontend/.env` to point to your EC2 instance:
 ```env
 VITE_API_URL=http://localhost:3000
-VITE_WORKER_URL=http://<secure-internal-ec2-ip-or-gateway>:3001
+VITE_WORKER_URL=http://<your-ec2-public-ip>:3001
 ```
+> ⚠️ If your EC2 Public IP changes on every reboot, consider attaching an **Elastic IP** to your instance.
 
-**Step 4: Run Locally**
-Start your local `server.js` and `npm run dev`. When you click "Generate", your local frontend will blast the code to the remote EC2 server, which will compile it and stream the preview back to your local iframe!
+**Step 6: Run Locally**
+Start your local `backend/server.js` and `frontend (npm run dev)`. When you click "Generate", your local frontend will send the code to the remote EC2 worker, which compiles it and streams the preview back to your local iframe!
 
 ---
 
@@ -124,9 +183,10 @@ This is the ultimate production deployment. The lightweight stateless services r
 2. Build your React frontend (`npm run build`) and deploy the static assets to an NGINX container in K8s, or host it on Vercel/Netlify. 
 
 **Step 2: Deploy Worker Orchestrator to EC2**
-Exactly the same as Scenario 2.
-1. Deploy the `worker/` folder to EC2 via PM2.
-2. Secure the EC2 instance within your VPC. Attach an AWS IAM Role to your K8s worker nodes (or GCP Service Account to GKE) to allow secure internal routing via VPC Peering or Internal Load Balancers.
+Follow Scenario 2 above. For production, **Option B (Docker Container)** is recommended:
+1. Copy the `worker/` folder to EC2 and run `docker compose up -d --build`.
+2. The container runs with a 3 GB memory limit, auto-restart, and health checks out of the box.
+3. Secure the EC2 instance within your VPC. Attach an AWS IAM Role to your K8s worker nodes (or GCP Service Account to GKE) to allow secure internal routing via VPC Peering or Internal Load Balancers.
 
 **Step 3: Configure Frontend Production Environment**
 Before building your frontend container/deployment, ensure your production environment variables are set to the public/internal URLs:
