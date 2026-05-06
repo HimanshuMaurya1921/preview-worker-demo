@@ -32,10 +32,18 @@ export function usePreview({ projectId, files, apiBase = '', onReady }) {
           
           let url;
           if (import.meta.env.DEV) {
-            // Dev: Use direct worker URL for local testing to avoid path proxy asset issues
-            url = data.previewUrl;
+            // Dev: Use direct worker URL for local testing to avoid path proxy asset issues.
+            // Rewrite the returned localhost URL to use the apiBase hostname (in case of a remote worker).
+            try {
+              const previewOrigin = new URL(data.previewUrl);
+              const baseOrigin = new URL(apiBase || window.location.origin);
+              previewOrigin.hostname = baseOrigin.hostname;
+              url = previewOrigin.toString();
+            } catch (e) {
+              url = data.previewUrl;
+            }
           } else {
-            // Prod: Use Cloudflare path proxy
+            // Prod: Use AWS API Gateway / CloudFront path proxy
             url = `${apiBase}/api/preview/proxy/${data.workerId}/`;
           }
           

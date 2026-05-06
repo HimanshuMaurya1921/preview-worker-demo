@@ -12,7 +12,7 @@ try {
   const pool = require('./preview-system/worker-pool/WorkerPool');
   const { createProxyMiddleware } = require('http-proxy-middleware');
 
-  // Next.js asset routing fallback for Cloudflare Proxy (Production)
+  // Next.js asset routing fallback for API Gateway/CloudFront Proxy (Production)
   // When hitting the proxy path, Next.js still requests /_next/static at the root domain.
   // We intercept it, check the Referer header for the worker ID, and manually proxy it to the correct port!
   app.use('/_next', (req, res, next) => {
