@@ -30,13 +30,25 @@ async function prepareWorkspace(workDir) {
   const templateDir = path.join(__dirname, 'template');
   await copyRecursive(templateDir, workDir);
 
-  const snapshotPath = path.join(__dirname, 'node_modules-snapshot.tar.gz');
+  const centralModules = '/app/central_modules/node_modules';
+  const targetModules = path.join(workDir, 'node_modules');
+
   try {
-    await fs.access(snapshotPath);
-    await execCommand(`tar -xzf ${snapshotPath} -C ${workDir}`);
+    // Optimization: If central modules exist (from Docker build), symlink them
+    await fs.access(centralModules);
+    console.log(`[Worker ${workerId}] Using optimized central node_modules symlink.`);
+    await fs.symlink(centralModules, targetModules);
   } catch (e) {
-    console.error(`[Worker ${workerId}] Snapshot extraction failed:`, e.message);
-    throw e;
+    // Fallback: Use the tarball if no central modules are found
+    console.log(`[Worker ${workerId}] Central modules not found, falling back to tarball...`);
+    const snapshotPath = path.join(__dirname, 'node_modules-snapshot.tar.gz');
+    try {
+      await fs.access(snapshotPath);
+      await execCommand(`tar -xzf ${snapshotPath} -C ${workDir}`);
+    } catch (err) {
+      console.error(`[Worker ${workerId}] Workspace preparation failed:`, err.message);
+      throw err;
+    }
   }
   
   return workDir;

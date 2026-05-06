@@ -83,7 +83,7 @@ app.get('/next-code', (req, res) => {
               directory: {
                 'route.js': {
                   file: {
-                    contents: `export async function GET() {\n  return Response.json({\n    message: 'Hello Harshit Jain! 👋 Welcome to WebContainer'\n  })\n}`
+                    contents: `export async function GET() {\n  return Response.json({\n    message: 'Hello Harshit Jain! 👋 Welcome to custome preview worker'\n  })\n}`
                   }
                 }
               }

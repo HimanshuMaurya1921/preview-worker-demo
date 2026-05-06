@@ -33,6 +33,17 @@ module.exports = function(pool) {
     const { projectId, files } = req.body;
     if (!files) return res.status(400).json({ error: 'Files are required' });
 
+    // Handle client disconnect during queueing
+    let isRequestActive = true;
+    req.on('close', () => {
+      if (isRequestActive) {
+        isRequestActive = false;
+        if (projectId) {
+          pool.cancelRequest(projectId).catch(() => {});
+        }
+      }
+    });
+
     try {
       if (projectId && sessions.has(projectId)) {
         const oldWorkerId = sessions.get(projectId);
@@ -47,8 +58,15 @@ module.exports = function(pool) {
         saveSessions();
       }
 
-      const worker = await pool.acquireWorker();
+      const worker = await pool.acquireWorker(projectId);
       
+      // If client already disconnected while we were in the queue, release the worker immediately
+      if (!isRequestActive) {
+        console.log(`[Orchestrator] Client disconnected for project ${projectId} while in queue. Releasing worker ${worker.id}.`);
+        pool.releaseWorker(worker.id).catch(() => {});
+        return; // req already closed
+      }
+
       const response = await fetch(`http://localhost:${worker.port}/__inject`, {
         method: 'POST',
         headers: { 
@@ -68,13 +86,17 @@ module.exports = function(pool) {
         saveSessions();
       }
 
+      isRequestActive = false; // Finished successfully
       res.json({
         workerId: worker.id,
         previewUrl: `http://localhost:${worker.port}`
       });
     } catch (err) {
+      isRequestActive = false;
       console.error(err);
-      res.status(500).json({ error: err.message });
+      if (!res.headersSent) {
+        res.status(500).json({ error: err.message });
+      }
     }
   });
 

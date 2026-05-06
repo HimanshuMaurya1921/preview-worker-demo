@@ -6,27 +6,29 @@ services:
     restart: unless-stopped
     ports:
       - "3001:3001"       # Orchestrator API
-      - "4000-4050:4000-4050"  # Next.js worker instances
+      - "4000-4100:4000-4100"  # Next.js worker instances (Expanded range)
     environment:
       - WORKER_PORT=3001
-      - POOL_MIN=2
-      - POOL_MAX=10
+      - POOL_MIN=3
+      - POOL_MAX=25        # Target: 25 active users per node
+      - QUEUE_MAX=15       # 15 users waiting in line
       - PORT_BASE=4000
       - SESSION_TTL_MS=300000
+      - BOOT_TIMEOUT_MS=60000 # Increased for multi-node density
     deploy:
       resources:
         limits:
-          memory: 3G       # Hard cap — container is killed if it exceeds this
+          memory: 7G       # Hard cap for t3.large (8GB)
         reservations:
-          memory: 512M     # Guaranteed minimum
+          memory: 1G       # Guaranteed minimum
     healthcheck:
       test: ["CMD", "node", "-e", "require('http').get('http://localhost:3001/health', r => { process.exit(r.statusCode === 200 ? 0 : 1) }).on('error', () => process.exit(1))"]
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 60s   # Give the pool time to warm up before checking
+      start_period: 60s
     tmpfs:
-      - /tmp:size=2500M,exec    # RAM-backed + exec permission for Next.js binaries
+      - /tmp:size=4500M,exec # Expanded for more concurrent workspaces
     logging:
       driver: json-file
       options:
