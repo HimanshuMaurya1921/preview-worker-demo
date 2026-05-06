@@ -10,9 +10,11 @@ class WorkerPool {
 
     this.workers = new Map();
     this.warmQueue = [];
-
-    // Create a pool of 500 reusable ports to prevent exceeding the port limit
     this.availablePorts = [];
+    this.usedPorts = new Set();
+    this.evictionTimer = null;
+
+    // Create a pool of reusable ports
     for (let i = 0; i < 500; i++) {
       this.availablePorts.push(this.portBase + i);
     }
@@ -21,27 +23,55 @@ class WorkerPool {
   async init() {
     console.log(`[WorkerPool] Initializing with ${this.minWorkers} warm workers...`);
     for (let i = 0; i < this.minWorkers; i++) {
-      await this.spawnWorker();
+      try {
+        await this.spawnWorker();
+      } catch (err) {
+        console.error(`[WorkerPool] Initial spawn failed:`, err.message);
+      }
     }
     console.log(`[WorkerPool] Ready. ${this.warmQueue.length} workers warm.`);
+  }
+
+  startEvictionTimer() {
+    if (this.evictionTimer) return;
+    this.evictionTimer = setInterval(() => {
+      const now = Date.now();
+      for (const [id, w] of this.workers) {
+        if (w.status === 'busy' && now - w.lastActive > this.ttlMs) {
+          console.log(`[${id}] Session TTL expired, releasing.`);
+          this.releaseWorker(id).catch(() => {});
+        }
+      }
+    }, 30000);
   }
 
   getAvailablePort() {
     if (this.availablePorts.length === 0) {
       throw new Error("No available ports");
     }
-    // Take from the front
-    return this.availablePorts.shift();
+    const port = this.availablePorts.shift();
+    this.usedPorts.add(port);
+    return port;
   }
 
   releasePort(port) {
-    // Put it back at the end so we cycle through ports
+    this.usedPorts.delete(port);
     if (!this.availablePorts.includes(port)) {
       this.availablePorts.push(port);
     }
   }
 
   async spawnWorker() {
+    // Check if we already have too many workers booting or warm
+    let activeCount = 0;
+    for (const [_, w] of this.workers) {
+      if (w.status === 'booting' || w.status === 'warm') activeCount++;
+    }
+    
+    if (this.workers.size >= this.maxWorkers) {
+       throw new Error('Worker pool at maximum capacity');
+    }
+
     const workerId = `w-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`;
     const port = this.getAvailablePort();
 
@@ -58,58 +88,82 @@ class WorkerPool {
     this.workers.set(workerId, worker);
 
     const workerScript = path.join(__dirname, '../preview-worker/worker.js');
-    const child = spawn('node', [workerScript, workerId, port], {
-      stdio: ['ignore', 'pipe', 'pipe']
+    const child = spawn('node', [workerScript, workerId, port.toString()], {
+      stdio: ['ignore', 'pipe', 'pipe'],
+      env: { ...process.env, AUTH_TOKEN: process.env.WORKER_AUTH_TOKEN }
     });
 
     worker.process = child;
 
-    return new Promise((resolve) => {
-      child.stdout.on('data', (data) => {
-        const out = data.toString();
-        if (process.env.DEBUG_WORKERS) {
-          console.log(`[${workerId} stdout]`, out);
-        }
-        if (out.includes('READY_SIGNAL')) {
-          worker.status = 'warm';
-          this.warmQueue.push(workerId);
-          console.log(`[${workerId}] Next.js ready on port ${port}`);
-          resolve(workerId);
-        }
-      });
+    const bootTimeout = 30000; // 30 seconds
 
-      child.stderr.on('data', (data) => {
-        if (process.env.DEBUG_WORKERS) {
-          console.error(`[${workerId} stderr]`, data.toString());
-        }
-      });
-      child.on('exit', (code) => {
-        console.log(`[${workerId}] Exited with code ${code}`);
-        this.workers.delete(workerId);
-        this.releasePort(port);
-        this.warmQueue = this.warmQueue.filter(id => id !== workerId);
-        this.checkReplenish();
-      });
+    return Promise.race([
+      new Promise((resolve, reject) => {
+        child.stdout.on('data', (data) => {
+          const out = data.toString();
+          if (process.env.DEBUG_WORKERS) {
+            console.log(`[${workerId} stdout]`, out);
+          }
+          if (out.includes('READY_SIGNAL')) {
+            worker.status = 'warm';
+            this.warmQueue.push(workerId);
+            console.log(`[${workerId}] Next.js ready on port ${port}`);
+            resolve(workerId);
+          }
+        });
+
+        child.stderr.on('data', (data) => {
+          if (process.env.DEBUG_WORKERS) {
+            console.error(`[${workerId} stderr]`, data.toString());
+          }
+        });
+
+        child.on('exit', (code) => {
+          console.log(`[${workerId}] Exited with code ${code}`);
+          this.workers.delete(workerId);
+          this.releasePort(port);
+          this.warmQueue = this.warmQueue.filter(id => id !== workerId);
+          this.checkReplenish();
+          reject(new Error(`Worker ${workerId} exited with code ${code} during boot`));
+        });
+
+        child.on('error', (err) => {
+          console.error(`[${workerId}] Spawn error:`, err);
+          reject(err);
+        });
+      }),
+      new Promise((_, reject) => {
+        setTimeout(() => {
+          if (worker.status === 'booting') {
+            console.error(`[${workerId}] Boot timeout after ${bootTimeout}ms. Killing.`);
+            child.kill('SIGKILL');
+            reject(new Error(`Worker ${workerId} boot timeout`));
+          }
+        }, bootTimeout);
+      })
+    ]).catch(err => {
+      // Clean up if we rejected (timeout or error)
+      this.workers.delete(workerId);
+      this.releasePort(port);
+      this.warmQueue = this.warmQueue.filter(id => id !== workerId);
+      throw err;
     });
   }
 
   checkReplenish() {
-    // Count warm + booting workers (exclude busy) to decide if we need to replenish
     let warmAndBooting = 0;
     for (const [_, w] of this.workers) {
       if (w.status === 'warm' || w.status === 'booting') warmAndBooting++;
     }
 
     if (warmAndBooting < this.minWorkers && this.workers.size < this.maxWorkers) {
-      // Small delay to prevent tight loops and allow cleanup to finish
       setTimeout(() => {
-        // Re-check before spawning
         let currentWarmAndBooting = 0;
         for (const [_, w] of this.workers) {
           if (w.status === 'warm' || w.status === 'booting') currentWarmAndBooting++;
         }
         if (currentWarmAndBooting < this.minWorkers && this.workers.size < this.maxWorkers) {
-          this.spawnWorker();
+          this.spawnWorker().catch(err => console.error('[WorkerPool] Replenish failed:', err.message));
         }
       }, 1500);
     }
@@ -181,6 +235,7 @@ class WorkerPool {
 
   shutdown() {
     console.log('[WorkerPool] Shutting down all workers...');
+    if (this.evictionTimer) clearInterval(this.evictionTimer);
     for (const [id, worker] of this.workers) {
       try {
         worker.process.kill('SIGKILL');
@@ -191,25 +246,4 @@ class WorkerPool {
   }
 }
 
-const pool = new WorkerPool();
-setInterval(() => {
-  const now = Date.now();
-  for (const [id, w] of pool.workers) {
-    if (w.status === 'busy' && now - w.lastActive > pool.ttlMs) {
-      console.log(`[${id}] Session TTL expired, releasing.`);
-      pool.releaseWorker(id);
-    }
-  }
-}, 30000);
-
-// Graceful shutdown on Ctrl+C
-process.on('SIGINT', () => {
-  pool.shutdown();
-  process.exit(0);
-});
-process.on('SIGTERM', () => {
-  pool.shutdown();
-  process.exit(0);
-});
-
-module.exports = pool;
+module.exports = WorkerPool;

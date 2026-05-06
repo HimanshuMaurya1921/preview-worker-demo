@@ -14,6 +14,10 @@ if (!workerId || !port) {
 }
 
 const nextPort = port + 10000; // Next.js internal port
+if (nextPort > 65535) {
+  console.error(`[Worker ${workerId}] Port overflow: nextPort ${nextPort} is too high`);
+  process.exit(1);
+}
 
 async function prepareWorkspace(workDir) {
   await fs.mkdir(workDir, { recursive: true });
@@ -26,9 +30,8 @@ async function prepareWorkspace(workDir) {
     await fs.access(snapshotPath);
     await execCommand(`tar -xzf ${snapshotPath} -C ${workDir}`);
   } catch (e) {
-    // Snapshot might not exist locally yet
     console.error(`[Worker ${workerId}] Snapshot extraction failed:`, e.message);
-    throw e; // Throw so main() can catch and exit
+    throw e;
   }
   
   return workDir;
@@ -65,16 +68,13 @@ function execCommand(command) {
 async function main() {
   const workDir = path.join(os.tmpdir(), `ai-studio-${workerId}`);
 
-  // Register cleanup immediately so it runs even if prepareWorkspace fails
   const fsSync = require('fs');
   const cleanup = () => {
     try {
       if (fsSync.existsSync(workDir)) {
         fsSync.rmSync(workDir, { recursive: true, force: true });
       }
-    } catch (e) {
-      // Ignore cleanup errors
-    }
+    } catch (e) {}
   };
 
   process.on('exit', cleanup);
@@ -83,34 +83,57 @@ async function main() {
 
   await prepareWorkspace(workDir);
   const app = express();
-  app.use(express.json({ limit: '50mb' }));
+  
+  // Security middleware for internal injection
+  const authMiddleware = (req, res, next) => {
+    const token = req.headers['x-worker-auth'];
+    if (!token || token !== process.env.AUTH_TOKEN) {
+      console.warn(`[Worker ${workerId}] Unauthorized injection attempt blocked.`);
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+    next();
+  };
 
-  app.post('/__inject', async (req, res) => {
+  app.post('/__inject', express.json({ limit: '50mb' }), authMiddleware, async (req, res) => {
     const { files } = req.body;
     if (!files) return res.status(400).json({ error: 'No files provided' });
 
     try {
       const flatFiles = {};
+      let totalSize = 0;
+
       const flatten = (obj, prefix = '') => {
         for (const [key, value] of Object.entries(obj)) {
           const currentPath = prefix ? path.join(prefix, key) : key;
           if (value && typeof value === 'object') {
             if (value.file && value.file.contents !== undefined) {
-              flatFiles[currentPath] = value.file.contents;
+              const content = value.file.contents;
+              totalSize += Buffer.byteLength(content, 'utf8');
+              flatFiles[currentPath] = content;
             } else if (value.directory) {
               flatten(value.directory, currentPath);
             } else if (value.contents !== undefined) {
-              flatFiles[currentPath] = value.contents;
+              const content = value.contents;
+              totalSize += Buffer.byteLength(content, 'utf8');
+              flatFiles[currentPath] = content;
             } else {
-              flatFiles[currentPath] = JSON.stringify(value);
+              const content = JSON.stringify(value);
+              totalSize += Buffer.byteLength(content, 'utf8');
+              flatFiles[currentPath] = content;
             }
           } else if (typeof value === 'string') {
+            totalSize += Buffer.byteLength(value, 'utf8');
             flatFiles[currentPath] = value;
           }
         }
       };
       
       flatten(files);
+
+      // Enforce 20MB limit on injected code to protect RAM
+      if (totalSize > 20 * 1024 * 1024) {
+        return res.status(413).json({ error: 'Injected files too large (max 20MB)' });
+      }
 
       for (const [filePath, content] of Object.entries(flatFiles)) {
         const fullPath = path.join(workDir, filePath);
