@@ -78,7 +78,19 @@ npm run dev
 
 ## 4. End-to-End Verification
 
-1. **Open Browser**: Go to the local Frontend URL.
+14. **View Preview**: The iframe in your frontend should load the Next.js app served from inside the KIND pod.
+
+### 4.1 Personalization Test (End-to-End Flow)
+This test verifies that data travels correctly through all layers:
+1. **Input**: Type "Antigravity" in the Name input on the host frontend.
+2. **Action**: Click "Generate Next.js Demo".
+3. **Internal Flow**:
+    - Frontend sends name to Backend (`localhost:3000`).
+    - Backend generates personalized Next.js code.
+    - Frontend sends personalized code to Orchestrator (`localhost:3001`).
+    - Orchestrator injects code into Worker Pod in KIND.
+4. **Verification**: In the preview frame, click the purple button. It should display: `✨ Hello Antigravity Jain! 👋 ... ✨`.
+
 2. **Generate Code**: Trigger an AI generation.
 3. **Sticky Session Verification**:
     - The first time you hit the preview, the Orchestrator sets a `preview-worker-id` cookie.
