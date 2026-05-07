@@ -1,0 +1,6 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: preview
+  labels:
+    app: ai-studio-preview

@@ -5,24 +5,14 @@ const fs = require('fs/promises');
 const os = require('os');
 const { createProxyMiddleware } = require('http-proxy-middleware');
 
-const workerId = process.argv[2];
-const port = parseInt(process.argv[3], 10);
+// ─── Config ───────────────────────────────────────────────────────────────────
+const PORT = 3000;
+const NEXT_PORT = 3001;
+const WORKSPACE = process.env.WORKSPACE || path.join(os.tmpdir(), `ai-studio-worker`);
+const AUTH_TOKEN = process.env.AUTH_TOKEN || 'local-dev-token';
 
-if (!workerId || !port) {
-  console.error('Usage: node worker.js <workerId> <port>');
-  process.exit(1);
-}
-
-// Configurable port offset for Next.js internal server
-const NEXT_PORT_OFFSET = parseInt(process.env.NEXT_PORT_OFFSET || '10000', 10);
-
-// Validate port boundary before assignment
-if (port + NEXT_PORT_OFFSET > 65535) {
-  console.error(`[Worker ${workerId}] Port overflow: port ${port} + offset ${NEXT_PORT_OFFSET} exceeds 65535`);
-  process.exit(1);
-}
-
-const nextPort = port + NEXT_PORT_OFFSET;
+// ─── State ────────────────────────────────────────────────────────────────────
+let nextReady = false;
 
 async function prepareWorkspace(workDir) {
   await fs.mkdir(workDir, { recursive: true });
@@ -33,21 +23,30 @@ async function prepareWorkspace(workDir) {
   const centralModules = '/app/central_modules/node_modules';
   const targetModules = path.join(workDir, 'node_modules');
 
+  console.log(`[Worker] Checking for modules at: ${centralModules}`);
   try {
-    // Optimization: If central modules exist (from Docker build), symlink them
     await fs.access(centralModules);
-    console.log(`[Worker ${workerId}] Using optimized central node_modules symlink.`);
+    console.log(`[Worker] Found central modules.`);
     await fs.symlink(centralModules, targetModules);
   } catch (e) {
-    // Fallback: Use the tarball if no central modules are found
-    console.log(`[Worker ${workerId}] Central modules not found, falling back to tarball...`);
-    const snapshotPath = path.join(__dirname, 'node_modules-snapshot.tar.gz');
+    const templateModules = path.join(templateDir, 'node_modules');
+    const rootModules = '/app/node_modules';
+    
+    console.log(`[Worker] Central modules not found. Checking template: ${templateModules}`);
     try {
-      await fs.access(snapshotPath);
-      await execCommand(`tar -xzf ${snapshotPath} -C ${workDir}`);
+      await fs.access(templateModules);
+      console.log(`[Worker] Found template modules.`);
+      await fs.symlink(templateModules, targetModules);
     } catch (err) {
-      console.error(`[Worker ${workerId}] Workspace preparation failed:`, err.message);
-      throw err;
+      console.log(`[Worker] Template modules not found. Checking root: ${rootModules}`);
+      try {
+        await fs.access(rootModules);
+        console.log(`[Worker] Found root modules.`);
+        await fs.symlink(rootModules, targetModules);
+      } catch (err2) {
+        console.error(`[Worker] CRITICAL: No node_modules found anywhere!`);
+        throw new Error('Missing node_modules');
+      }
     }
   }
   
@@ -72,26 +71,19 @@ async function copyRecursive(src, dest) {
   }
 }
 
-function execCommand(command) {
-  return new Promise((resolve, reject) => {
-    const { exec } = require('child_process');
-    exec(command, (error, stdout) => {
-      if (error) reject(error);
-      else resolve(stdout);
-    });
-  });
-}
-
 async function main() {
-  const workDir = path.join(os.tmpdir(), `ai-studio-${workerId}`);
+  const workDir = WORKSPACE;
 
   const fsSync = require('fs');
   const cleanup = () => {
-    try {
-      if (fsSync.existsSync(workDir)) {
-        fsSync.rmSync(workDir, { recursive: true, force: true });
-      }
-    } catch (e) {}
+    // Only cleanup if not in GKE (where volume is ephemeral)
+    if (!process.env.RUNTIME) {
+      try {
+        if (fsSync.existsSync(workDir)) {
+          fsSync.rmSync(workDir, { recursive: true, force: true });
+        }
+      } catch (e) {}
+    }
   };
 
   process.on('exit', cleanup);
@@ -104,12 +96,21 @@ async function main() {
   // Security middleware for internal injection
   const authMiddleware = (req, res, next) => {
     const token = req.headers['x-worker-auth'];
-    if (!token || token !== process.env.AUTH_TOKEN) {
-      console.warn(`[Worker ${workerId}] Unauthorized injection attempt blocked.`);
+    if (!token || token !== AUTH_TOKEN) {
+      console.warn(`[Worker] Unauthorized injection attempt blocked.`);
       return res.status(401).json({ error: 'Unauthorized' });
     }
     next();
   };
+
+  // ─── Health endpoint ──────────────────────────────────────────────────────────
+  app.get('/__health', (req, res) => {
+    if (nextReady) {
+      res.json({ status: 'ready' });
+    } else {
+      res.status(503).json({ status: 'booting' });
+    }
+  });
 
   app.post('/__inject', express.json({ limit: '50mb' }), authMiddleware, async (req, res) => {
     const { files } = req.body;
@@ -138,18 +139,14 @@ async function main() {
               totalSize += Buffer.byteLength(content, 'utf8');
               flatFiles[currentPath] = content;
             } else {
-              // Instead of silent JSON.stringify, throw an error for malformed objects
-              throw new Error(`Invalid file structure at "${currentPath}": Expected string content or directory object.`);
+              throw new Error(`Invalid file structure at "${currentPath}"`);
             }
-          } else {
-             throw new Error(`Invalid file type at "${currentPath}": Expected string or object.`);
           }
         }
       };
       
       flatten(files);
 
-      // Enforce 20MB limit on injected code to protect RAM
       if (totalSize > 20 * 1024 * 1024) {
         return res.status(413).json({ error: 'Injected files too large (max 20MB)' });
       }
@@ -157,7 +154,6 @@ async function main() {
       for (const [filePath, content] of Object.entries(flatFiles)) {
         const fullPath = path.resolve(workDir, filePath);
         
-        // Security check: ensure the file stays within the workspace
         if (!fullPath.startsWith(path.resolve(workDir) + path.sep)) {
           throw new Error(`Path traversal attempt blocked: "${filePath}"`);
         }
@@ -174,33 +170,43 @@ async function main() {
   });
 
   app.use('/', createProxyMiddleware({
-    target: `http://localhost:${nextPort}`,
+    target: `http://localhost:${NEXT_PORT}`,
     changeOrigin: true,
     ws: true,
     logLevel: 'silent'
   }));
 
-  const server = app.listen(port, () => {
-    const nextProc = spawn('npm', ['run', 'dev', '--', '-p', nextPort.toString()], {
+  const server = app.listen(PORT, () => {
+    console.log(`[Worker] Listening on port ${PORT}`);
+    console.log(`[Worker] Starting Next.js dev server in ${workDir}...`);
+    
+    const nextBin = path.join(workDir, 'node_modules', '.bin', 'next');
+    const nextProc = spawn(nextBin, ['dev', '-p', NEXT_PORT.toString()], {
       cwd: workDir,
-      stdio: 'pipe'
+      stdio: 'pipe',
+      env: { ...process.env, NODE_ENV: 'development' }
     });
 
     nextProc.stdout.on('data', (data) => {
       const out = data.toString();
+      process.stdout.write(`[Next STDOUT] ${out}`);
       if (out.includes('Ready') || out.includes('ready in')) {
-        console.log('READY_SIGNAL');
+        nextReady = true;
+        console.log('[Worker] NEXT_READY_SIGNAL');
       }
     });
 
-    nextProc.stderr.on('data', (data) => console.error(`[Next.js Error] ${data.toString()}`));
+    nextProc.stderr.on('data', (data) => {
+      process.stderr.write(`[Next STDERR] ${data.toString()}`);
+    });
 
-    nextProc.on('exit', (code) => {
+    nextProc.on('exit', (code, signal) => {
+      console.log(`[Worker] Next.js process exited with code ${code} and signal ${signal}`);
       process.exit(code !== null ? code : 1);
     });
 
     nextProc.on('error', (err) => {
-      console.error(`[Next.js Spawn Error]`, err);
+      console.error(`[Worker] Failed to start Next.js process:`, err);
       process.exit(1);
     });
   });

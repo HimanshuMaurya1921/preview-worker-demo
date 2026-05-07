@@ -1,43 +1,33 @@
-FROM node:18-bullseye-slim
+FROM node:18-slim
 
-# Install system utilities needed by the worker
-RUN apt-get update && apt-get install -y tar procps && rm -rf /var/lib/apt/lists/*
+# Install basic tools
+RUN apt-get update && apt-get install -y curl tar procps && rm -rf /var/lib/apt/lists/*
 
-# Set working directory
 WORKDIR /app
 
-# Copy package configuration
-COPY package*.json ./
+# Copy worker server files
+COPY package.json ./
+RUN npm install
 
-# Install only production dependencies for the Orchestrator
-RUN npm install --omit=dev
+# Copy the Next.js template
+COPY preview-system/preview-worker/template ./template
 
-# Copy all worker source files
-COPY . .
+# Pre-install Next.js dependencies inside the template
+# This runs during image build so workers don't npm install at runtime
+WORKDIR /app/template
+RUN npm install
 
-# Optimization: Pre-extract the Next.js template node_modules into a central location
-# This avoids doing 'tar -xzf' per worker, saving massive CPU and IO.
-RUN mkdir -p /app/central_modules && \
-    if [ -f /app/preview-system/preview-worker/node_modules-snapshot.tar.gz ]; then \
-        tar -xzf /app/preview-system/preview-worker/node_modules-snapshot.tar.gz -C /app/central_modules; \
-    fi
+# Go back to app root
+WORKDIR /app
 
-# Secure the container
-RUN chown -R node:node /app
-USER node
+# Copy worker server files
+COPY preview-system/preview-worker/worker.js ./
 
-# Expose ports
-EXPOSE 3001
-EXPOSE 4000-4100
+# Create workspace directory
+# In GKE this gets replaced by an emptyDir volume
+# Locally this is just a regular folder
+RUN mkdir -p /workspace
 
-# Set production environment variables
-ENV WORKER_PORT=3001
-ENV POOL_MIN=3
-ENV POOL_MAX=25
-ENV QUEUE_MAX=15
-ENV PORT_BASE=4000
-ENV SESSION_TTL_MS=300000
-ENV BOOT_TIMEOUT_MS=60000
+EXPOSE 3000
 
-# Start the worker orchestrator
-CMD ["node", "server.js"]
+CMD ["node", "worker.js"]

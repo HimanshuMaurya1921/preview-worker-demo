@@ -1,0 +1,62 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: ttl-cleaner
+  namespace: preview
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: pod-deleter
+  namespace: preview
+rules:
+- apiGroups: [""]
+  resources: ["pods"]
+  verbs: ["get", "list", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: ttl-cleaner-binding
+  namespace: preview
+subjects:
+- kind: ServiceAccount
+  name: ttl-cleaner
+  namespace: preview
+roleRef:
+  kind: Role
+  name: pod-deleter
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: preview-pod-ttl-cleanup
+  namespace: preview
+spec:
+  schedule: "* * * * *"
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          serviceAccountName: ttl-cleaner
+          restartPolicy: OnFailure
+          containers:
+          - name: cleanup
+            image: bitnami/kubectl:latest
+            command:
+            - /bin/sh
+            - -c
+            - |
+              # TTL Cutoff in milliseconds:
+              # - Production: 300000 (5 minutes)
+              # - Local Test: 60000 (1 minute)
+              CUTOFF=$(( $(date +%s%3N) - 60000 ))
+              kubectl get pods -n preview \
+                -l app=preview-worker \
+                --output=json | \
+              jq -r ".items[] | 
+                select(.metadata.annotations[\"created-at\"] | 
+                  tonumber < $CUTOFF) | 
+                .metadata.name" | \
+              xargs -r kubectl delete pod -n preview

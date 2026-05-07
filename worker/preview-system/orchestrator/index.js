@@ -1,131 +1,121 @@
 const express = require('express');
 const { createProxyMiddleware } = require('http-proxy-middleware');
-const fs = require('fs');
-const path = require('path');
+const crypto = require('crypto');
 
-const SESSION_FILE = path.join(process.cwd(), '.sessions.json');
+const IS_GKE = process.env.RUNTIME === 'gke';
 
-module.exports = function(pool) {
+// Load the right backend
+const backend = IS_GKE
+  ? require('./k8sClient')
+  : require('./localWorker');
+
+module.exports = function() {
   const router = express.Router();
-  
-  // Initialize sessions from disk if available
-  let sessions = new Map();
-  try {
-    if (fs.existsSync(SESSION_FILE)) {
-      const data = JSON.parse(fs.readFileSync(SESSION_FILE, 'utf8'));
-      sessions = new Map(Object.entries(data));
-      console.log(`[Orchestrator] Restored ${sessions.size} sessions from disk.`);
-    }
-  } catch (err) {
-    console.error('[Orchestrator] Failed to restore sessions:', err.message);
-  }
+  const sessions = new Map();  // projectId → { workerId, workerHost, workerPort }
+  const AUTH_TOKEN = process.env.WORKER_AUTH_TOKEN;
 
-  const saveSessions = () => {
-    try {
-      const data = Object.fromEntries(sessions);
-      fs.writeFileSync(SESSION_FILE, JSON.stringify(data, null, 2));
-    } catch (err) {
-      console.error('[Orchestrator] Failed to save sessions:', err.message);
-    }
-  };
+  // Reconcile sessions from k8s on startup if in GKE mode
+  if (IS_GKE) {
+    backend.reconcileSessions(sessions).catch(console.error);
+  }
 
   router.post('/start', async (req, res) => {
     const { projectId, files } = req.body;
-    if (!files) return res.status(400).json({ error: 'Files are required' });
+    if (!files || !projectId) return res.status(400).json({ error: 'projectId and files required' });
 
-    // Handle client disconnect during queueing
-    let isRequestActive = true;
-    req.on('close', () => {
-      if (isRequestActive) {
-        isRequestActive = false;
-        if (projectId) {
-          pool.cancelRequest(projectId).catch(() => {});
-        }
+    // Clean up any existing session for this project
+    if (sessions.has(projectId)) {
+      const old = sessions.get(projectId);
+      try {
+        if (IS_GKE) await backend.deletePreviewPod(old.workerId);
+        else await backend.deleteLocalWorker(old.workerId);
+      } catch (err) {}
+      sessions.delete(projectId);
+    }
+
+    // On GKE: check cluster capacity before creating pod
+    if (IS_GKE) {
+      const { active, max } = await backend.getClusterCapacity();
+      if (active >= max) {
+        return res.status(503).json({
+          error: `Preview cluster is full (${active}/${max}). Try again shortly.`,
+          retryAfterMs: 15000
+        });
       }
-    });
+    }
+
+    let isActive = true;
+    req.on('close', () => { isActive = false; });
 
     try {
-      if (projectId && sessions.has(projectId)) {
-        const oldWorkerId = sessions.get(projectId);
-        const oldWorker = pool.getWorker(oldWorkerId);
-        
-        // If the worker is still there, recycle it
-        if (oldWorker) {
-          console.log(`[Session] Recycling old worker ${oldWorkerId} for project ${projectId}`);
-          await pool.releaseWorker(oldWorkerId);
-        }
-        sessions.delete(projectId);
-        saveSessions();
+      const sessionId = crypto.randomBytes(8).toString('hex');
+      let workerHost, workerPort, workerId;
+
+      if (IS_GKE) {
+        workerId = await backend.createPreviewPod(sessionId, projectId);
+        workerHost = await backend.waitForPodReady(workerId);
+        workerPort = 3000;
+      } else {
+        const result = await backend.createLocalWorker(sessionId);
+        workerId = result.containerName;
+        workerPort = result.port;
+        workerHost = 'localhost';
+        await backend.waitForWorkerReady(workerPort);
       }
 
-      const worker = await pool.acquireWorker(projectId);
-      
-      // If client already disconnected while we were in the queue, release the worker immediately
-      if (!isRequestActive) {
-        console.log(`[Orchestrator] Client disconnected for project ${projectId} while in queue. Releasing worker ${worker.id}.`);
-        pool.releaseWorker(worker.id).catch(() => {});
-        return; // req already closed
+      if (!isActive) {
+        if (IS_GKE) backend.deletePreviewPod(workerId).catch(() => {});
+        else backend.deleteLocalWorker(workerId).catch(() => {});
+        return;
       }
 
-      const response = await fetch(`http://localhost:${worker.port}/__inject`, {
+      // Inject files into the running pod/container
+      const injectRes = await fetch(`http://${workerHost}:${workerPort}/__inject`, {
         method: 'POST',
-        headers: { 
+        headers: {
           'Content-Type': 'application/json',
-          'x-worker-auth': process.env.WORKER_AUTH_TOKEN
+          'x-worker-auth': AUTH_TOKEN
         },
         body: JSON.stringify({ files })
       });
+
+      if (!injectRes.ok) throw new Error(`Inject failed: ${await injectRes.text()}`);
+
+      sessions.set(projectId, { workerId, workerHost, workerPort });
       
-      if (!response.ok) {
-        const text = await response.text();
-        throw new Error(`Failed to inject files into worker: ${response.status} ${text}`);
-      }
-
-      if (projectId) {
-        sessions.set(projectId, worker.id);
-        saveSessions();
-      }
-
-      isRequestActive = false; // Finished successfully
-      res.json({
-        workerId: worker.id,
-        previewUrl: `http://localhost:${worker.port}`
+      res.json({ 
+        workerId, 
+        previewUrl: `http://localhost:${process.env.WORKER_PORT || 3001}/api/preview/proxy/${workerId}/` 
       });
+
     } catch (err) {
-      isRequestActive = false;
-      console.error(err);
-      if (!res.headersSent) {
-        res.status(500).json({ error: err.message });
-      }
+      console.error('[Start] Error:', err.message);
+      if (!res.headersSent) res.status(500).json({ error: err.message });
     }
   });
 
   router.patch('/:workerId', async (req, res) => {
     const { workerId } = req.params;
     const { files, projectId } = req.body;
-    const worker = pool.getWorker(workerId);
-    
-    if (!worker || worker.status !== 'busy') {
-      return res.status(404).json({ error: 'Worker not found or not busy' });
-    }
 
-    // Verify session ownership if projectId is provided
-    if (projectId && sessions.get(projectId) !== workerId) {
-      return res.status(403).json({ error: 'Project ID does not match this worker session.' });
+    const session = [...sessions.values()].find(s => s.workerId === workerId);
+    if (!session) return res.status(404).json({ error: 'Session not found' });
+
+    if (projectId && sessions.get(projectId)?.workerId !== workerId) {
+      return res.status(403).json({ error: 'Session mismatch' });
     }
 
     try {
-      pool.touchWorker(workerId);
-      const response = await fetch(`http://localhost:${worker.port}/__inject`, {
+      const injectRes = await fetch(`http://${session.workerHost}:${session.workerPort}/__inject`, {
         method: 'POST',
         headers: { 
-          'Content-Type': 'application/json',
-          'x-worker-auth': process.env.WORKER_AUTH_TOKEN
+          'Content-Type': 'application/json', 
+          'x-worker-auth': AUTH_TOKEN 
         },
         body: JSON.stringify({ files })
       });
 
-      if (!response.ok) throw new Error('Failed to inject files');
+      if (!injectRes.ok) throw new Error('Inject failed');
       res.json({ ok: true });
     } catch (err) {
       res.status(500).json({ error: err.message });
@@ -134,17 +124,18 @@ module.exports = function(pool) {
 
   const cleanupHandler = async (req, res) => {
     const { workerId } = req.params;
-    await pool.releaseWorker(workerId);
+    
+    try {
+      if (IS_GKE) await backend.deletePreviewPod(workerId);
+      else await backend.deleteLocalWorker(workerId);
+    } catch (err) {}
 
-    let changed = false;
-    for (const [pid, wid] of sessions) {
-      if (wid === workerId) {
+    for (const [pid, s] of sessions) {
+      if (s.workerId === workerId) {
         sessions.delete(pid);
-        changed = true;
         break;
       }
     }
-    if (changed) saveSessions();
 
     res.json({ ok: true });
   };
@@ -153,20 +144,26 @@ module.exports = function(pool) {
   router.post('/:workerId/delete', cleanupHandler);
 
   router.get('/stats', (req, res) => {
-    res.json(pool.getStats());
+    res.json({
+      runtime: IS_GKE ? 'gke' : 'local',
+      activeSessions: sessions.size,
+      sessions: [...sessions.entries()].map(([pid, s]) => ({
+        projectId: pid,
+        workerId: s.workerId
+      }))
+    });
   });
 
   router.use('/proxy/:workerId', (req, res, next) => {
     const { workerId } = req.params;
-    const worker = pool.getWorker(workerId);
-    if (!worker || worker.status !== 'busy') {
+    const session = [...sessions.values()].find(s => s.workerId === workerId);
+
+    if (!session) {
       return res.status(404).send('Preview not found or expired');
     }
 
-    pool.touchWorker(workerId);
-
     createProxyMiddleware({
-      target: `http://localhost:${worker.port}`,
+      target: `http://${session.workerHost}:${session.workerPort}`,
       changeOrigin: true,
       ws: true,
       logLevel: 'silent',
