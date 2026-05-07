@@ -32,76 +32,109 @@ export function usePreview({ projectId, files, apiBase = '', onReady }) {
 
   useEffect(() => {
     const currentFilesStr = stableStringify(files);
-    if (currentFilesStr === prevFilesRef.current) {
+    
+    // Only return early if content is identical AND we have a worker pod
+    if (currentFilesStr === prevFilesRef.current && workerId) {
+      // Perform a quick health check to see if we need a silent re-boot.
+      fetch(`${apiBase}/api/preview/proxy/${workerId}/__health`)
+        .then(res => { if (!res.ok) setWorkerId(null); })
+        .catch(() => setWorkerId(null));
       return;
     }
+    
+    // If we reach here, either the content changed OR the pod was reaped (workerId is null)
     prevFilesRef.current = currentFilesStr;
 
     if (Object.keys(files).length === 0) return;
 
+    // Set loading immediately to show the overlay even during the debounce period
+    setLoading(true);
+
     const startOrUpdate = async () => {
       try {
-        if (!workerId) {
-          setLoading(true);
-          const res = await fetch(`${apiBase}/api/preview/start`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ projectId, files })
-          });
-          const data = await res.json();
-          if (!res.ok) throw new Error(data.error);
-          
-          setWorkerId(data.workerId);
-          
-          let url;
-          if (import.meta.env.DEV) {
-            try {
-              const previewOrigin = new URL(data.previewUrl);
-              const baseOrigin = new URL(apiBase || window.location.origin);
-              previewOrigin.hostname = baseOrigin.hostname;
-              url = previewOrigin.toString();
-            } catch (e) {
-              url = data.previewUrl;
-            }
-          } else {
-            url = `${apiBase}/api/preview/proxy/${data.workerId}/`;
-          }
-          
-          setPreviewUrl(url);
-          setLoading(false);
-          if (onReady) onReady(url);
-        } else {
-          // Pass projectId for ownership verification on the server
-          await fetch(`${apiBase}/api/preview/${workerId}`, {
-            method: 'PATCH',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ files, projectId })
-          });
+        // Generate/Retrieve stable userId for pod reuse
+        let userId = localStorage.getItem('preview_user_id');
+        if (!userId) {
+          userId = `user-${Math.random().toString(36).substring(2, 11)}`;
+          localStorage.setItem('preview_user_id', userId);
         }
+
+        // Set a fail-safe timeout: if we're still booting after 60s, something is wrong
+        const failSafeId = setTimeout(() => {
+          if (loading || !workerId) {
+            setLoading(false);
+            setError('Preview boot timed out. The pod might be overloaded. Please try again.');
+          }
+        }, 60000);
+
+        // Always use /start to trigger Orchestrator's reuse logic
+        const res = await fetch(`${apiBase}/api/preview/start`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ projectId, userId, files })
+        });
+        
+        clearTimeout(failSafeId);
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error);
+        
+        // Handle Self-Healing: If session expired, clear ID and re-trigger immediately
+        if (data.status === 'expired') {
+          console.warn('[usePreview] Session expired (Pod recycled). Re-triggering cold start...');
+          setWorkerId(null);
+          return; // The useEffect will re-run automatically because workerId changed
+        }
+        
+        setWorkerId(data.workerId);
+        
+        // Let the UI know if this was a warm update vs cold boot
+        const isWarm = data.warm || false;
+        
+        let url;
+        if (import.meta.env.DEV) {
+          try {
+            const previewOrigin = new URL(data.previewUrl);
+            const baseOrigin = new URL(apiBase || window.location.origin);
+            previewOrigin.hostname = baseOrigin.hostname;
+            url = previewOrigin.toString();
+          } catch (e) {
+            url = data.previewUrl;
+          }
+        } else {
+          url = `${apiBase}/api/preview/proxy/${data.workerId}/`;
+        }
+        
+        // Forced Refresh: Append a version tag
+        const freshUrl = `${url}${url.includes('?') ? '&' : '?'}v=${Date.now()}`;
+        
+        setPreviewUrl(freshUrl);
+        setLoading(false);
+        if (onReady) onReady(freshUrl, { warm: isWarm });
       } catch (err) {
         setError(err.message);
         setLoading(false);
       }
     };
 
-    const timeout = setTimeout(startOrUpdate, 800); // 800ms debounce
+    const timeout = setTimeout(startOrUpdate, 1200);
     return () => clearTimeout(timeout);
   }, [files, workerId, projectId, apiBase, onReady]);
 
-  // Cleanup effect — runs ONLY on unmount
+  // Reliable Cleanup on Unmount
   useEffect(() => {
     return () => {
-      // Use refs to ensure we have the most up-to-date values for cleanup without re-subscribing
-      const currentWorkerId = workerIdRef.current;
-      const currentApiBase = apiBaseRef.current;
+      const id = workerIdRef.current;
+      const base = apiBaseRef.current;
       
-      if (currentWorkerId) {
-        const cleanupUrl = `${currentApiBase}/api/preview/${currentWorkerId}/delete`;
-        if (navigator.sendBeacon) {
-          navigator.sendBeacon(cleanupUrl);
-        } else {
-          fetch(cleanupUrl, { method: 'POST', keepalive: true }).catch(() => {});
-        }
+      if (id && base) {
+        console.log(`[usePreview] Cleaning up worker: ${id}`);
+        // Use keepalive to ensure the request finishes even if the tab is closing
+        fetch(`${base}/api/preview/stop`, {
+          method: 'DELETE',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ workerId: id }),
+          keepalive: true
+        }).catch(() => {});
       }
     };
   }, []); // empty array — intentional

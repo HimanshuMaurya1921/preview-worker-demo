@@ -63,7 +63,6 @@ docker build --platform linux/amd64 -t $WORKER_IMAGE ./worker
 docker push $WORKER_IMAGE
 
 # Build and Push Orchestrator
-# (Note: Use the worker directory as context or ensure package.json is correct)
 docker build --platform linux/amd64 -t $ORCH_IMAGE ./worker --file worker/Dockerfile.orchestrator
 docker push $ORCH_IMAGE
 ```
@@ -90,20 +89,21 @@ kubectl apply -f k8s/network-policy.yaml
 kubectl apply -f k8s/cronjob.yaml
 
 # 4. Deploy Orchestrator
-# Update the image fields in orchestrator-deployment.yaml first!
+# (Make sure to update the image paths in orchestrator-deployment.yaml)
 kubectl apply -f k8s/orchestrator-deployment.yaml
 ```
 
-## 6. Verification
-```bash
-# Get the Orchestrator's External IP
-kubectl get service orchestrator
+## 6. Production Networking Considerations
 
-# Watch preview pods being created in real-time
-kubectl get pods -n preview -w
-```
+### 6.1 Session Affinity (Sticky Sessions)
+The Orchestrator uses a `preview-worker-id` cookie to route Next.js assets to the correct pod.
+- **Ingress**: If you use an Ingress Controller (like NGINX or GCE), ensure you enable **Session Affinity** based on cookies.
+- **HTTPS**: Since cookies are used, ensure your Ingress is configured with SSL (Managed Certificates) so that `SameSite=Lax` cookies work correctly in modern browsers.
+
+### 6.2 WebSocket Support
+Next.js HMR uses WebSockets. Your GKE Load Balancer or Ingress must have WebSockets enabled (standard on GCE Ingress, but may require timeout adjustments).
 
 ## 7. Management
 - **Scale Workers**: Update the `preview-pool` autoscaling limits.
+- **TTL Reaper**: The `preview-ttl-cleanup` CronJob runs every minute to reap sessions older than 5 minutes (default).
 - **Logs**: Use `kubectl logs -n preview <pod-name>` or Google Cloud Logging.
-- **Cleanup**: The `preview-ttl-cleanup` CronJob runs every 2 minutes to reap sessions older than 5 minutes.

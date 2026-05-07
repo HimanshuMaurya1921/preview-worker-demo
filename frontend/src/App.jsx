@@ -44,6 +44,18 @@ export default function App() {
             {isGenerating ? 'Loading...' : 'Generate Next.js Demo'}
           </button>
         </div>
+
+        <div className="mt-auto w-full p-4 bg-white rounded border border-gray-200 text-sm">
+          <div className="text-gray-500 mb-2 font-semibold">Infrastructure Status</div>
+          <div className="flex justify-between">
+            <span>Runtime</span>
+            <span className="text-blue-600 font-bold">K8s / KIND</span>
+          </div>
+          <div className="flex justify-between mt-1">
+            <span>User ID</span>
+            <span className="text-gray-400 font-mono text-xs">{localStorage.getItem('preview_user_id') || 'Initializing...'}</span>
+          </div>
+        </div>
       </div>
 
       <div className="border-l border-gray-200">

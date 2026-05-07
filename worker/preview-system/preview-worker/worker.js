@@ -1,5 +1,7 @@
 const express = require('express');
-const { spawn } = require('child_process');
+const { spawn, exec } = require('child_process');
+const util = require('util');
+const execAsync = util.promisify(exec);
 const path = require('path');
 const fs = require('fs/promises');
 const os = require('os');
@@ -13,15 +15,28 @@ const AUTH_TOKEN = process.env.AUTH_TOKEN || 'local-dev-token';
 
 // ─── State ────────────────────────────────────────────────────────────────────
 let nextReady = false;
+let compileVersion = 0;
+let isCompiling = false;
 
 async function prepareWorkspace(workDir) {
+  const start = Date.now();
+  console.log(`[Worker] Preparing workspace in ${workDir}...`);
   await fs.mkdir(workDir, { recursive: true });
 
   const templateDir = path.join(__dirname, 'template');
-  await copyRecursive(templateDir, workDir);
+  
+  // High-performance shell-based copy
+  console.log(`[Worker] Copying template files...`);
+  await execAsync(`cp -rn ${templateDir}/. ${workDir}/`);
+  console.log(`[Worker] Template copy took ${Date.now() - start}ms`);
 
   const centralModules = '/app/central_modules/node_modules';
   const targetModules = path.join(workDir, 'node_modules');
+  
+  // Clean up existing symlink/folder if it exists to avoid EEXIST
+  try {
+    await fs.rm(targetModules, { recursive: true, force: true });
+  } catch (e) {}
 
   console.log(`[Worker] Checking for modules at: ${centralModules}`);
   try {
@@ -53,24 +68,6 @@ async function prepareWorkspace(workDir) {
   return workDir;
 }
 
-async function copyRecursive(src, dest) {
-  try {
-    const stats = await fs.stat(src);
-    if (stats.isDirectory()) {
-      await fs.mkdir(dest, { recursive: true });
-      const entries = await fs.readdir(src);
-      for (const entry of entries) {
-        if (entry === 'node_modules') continue;
-        await copyRecursive(path.join(src, entry), path.join(dest, entry));
-      }
-    } else {
-      await fs.copyFile(src, dest);
-    }
-  } catch (e) {
-    if (e.code !== 'ENOENT') throw e;
-  }
-}
-
 async function main() {
   const workDir = WORKSPACE;
 
@@ -90,6 +87,16 @@ async function main() {
   process.on('SIGINT', () => process.exit(0));
   process.on('SIGTERM', () => process.exit(0));
 
+  process.on('uncaughtException', (err) => {
+    console.error('[Worker Uncaught Exception]', err);
+    process.exit(1);
+  });
+
+  process.on('unhandledRejection', (reason, promise) => {
+    console.error('[Worker Unhandled Rejection]', reason);
+    process.exit(1);
+  });
+
   await prepareWorkspace(workDir);
   const app = express();
   
@@ -105,18 +112,30 @@ async function main() {
 
   // ─── Health endpoint ──────────────────────────────────────────────────────────
   app.get('/__health', (req, res) => {
-    if (nextReady) {
-      res.json({ status: 'ready' });
-    } else {
-      res.status(503).json({ status: 'booting' });
-    }
+    res.json({ 
+      status: nextReady ? 'ready' : 'booting',
+      ready: nextReady,
+      isCompiling,
+      compileVersion,
+      podName: process.env.POD_NAME || 'local-worker'
+    });
   });
 
   app.post('/__inject', express.json({ limit: '50mb' }), authMiddleware, async (req, res) => {
-    const { files } = req.body;
+    const { files, wipe } = req.body;
     if (!files) return res.status(400).json({ error: 'No files provided' });
 
     try {
+      // 1. Optional Wipe (for clean project swaps)
+      if (wipe) {
+        console.log(`[Worker] Wiping workspace for new project...`);
+        const entries = await fs.readdir(workDir);
+        for (const entry of entries) {
+          if (entry === 'node_modules') continue;
+          await fs.rm(path.join(workDir, entry), { recursive: true, force: true });
+        }
+      }
+
       const flatFiles = {};
       let totalSize = 0;
 
@@ -146,6 +165,53 @@ async function main() {
       };
       
       flatten(files);
+
+      // ─── Proper React Badge Injection ───
+      const podName = process.env.POD_NAME || 'local-worker';
+      
+      // 1. Create the Badge Component
+      const badgeContent = `'use client';
+import { useEffect } from 'react';
+
+export default function PreviewBadge() {
+  useEffect(() => {
+    const el = document.createElement('div');
+    Object.assign(el.style, {
+      position: 'fixed',
+      bottom: '12px',
+      left: '12px',
+      padding: '4px 10px',
+      background: 'rgba(15, 23, 42, 0.9)',
+      backdropFilter: 'blur(8px)',
+      color: '#94a3b8',
+      fontSize: '11px',
+      fontFamily: 'monospace',
+      borderRadius: '6px',
+      border: '1px solid rgba(148, 163, 184, 0.2)',
+      zIndex: '999999',
+      pointerEvents: 'none',
+      display: 'flex',
+      alignItems: 'center',
+      gap: '6px',
+      boxShadow: '0 4px 12px rgba(0,0,0,0.2)'
+    });
+    el.innerHTML = \`<span style="width: 6px; height: 6px; background: #22c55e; border-radius: 50%;"></span> ${podName}\`;
+    document.body.appendChild(el);
+    return () => el.remove();
+  }, []);
+  return null;
+}
+`;
+      flatFiles['app/PreviewBadge.js'] = badgeContent;
+
+      // 2. Inject into layout.js if it exists
+      if (flatFiles['app/layout.js']) {
+        const layout = flatFiles['app/layout.js'];
+        if (!layout.includes('PreviewBadge')) {
+          const imported = "import PreviewBadge from './PreviewBadge';\n" + layout;
+          flatFiles['app/layout.js'] = imported.replace('{children}', '{children}<PreviewBadge />');
+        }
+      }
 
       if (totalSize > 20 * 1024 * 1024) {
         return res.status(413).json({ error: 'Injected files too large (max 20MB)' });
@@ -181,18 +247,34 @@ async function main() {
     console.log(`[Worker] Starting Next.js dev server in ${workDir}...`);
     
     const nextBin = path.join(workDir, 'node_modules', '.bin', 'next');
-    const nextProc = spawn(nextBin, ['dev', '-p', NEXT_PORT.toString()], {
+    nextProc = spawn(nextBin, ['dev', '--turbo', '-p', NEXT_PORT.toString()], {
       cwd: workDir,
-      stdio: 'pipe',
-      env: { ...process.env, NODE_ENV: 'development' }
+      env: { 
+        ...process.env, 
+        NODE_ENV: 'development',
+        NEXT_TELEMETRY_DISABLED: '1',
+        WATCHPACK_POLLING: 'true'
+      }
     });
 
     nextProc.stdout.on('data', (data) => {
       const out = data.toString();
       process.stdout.write(`[Next STDOUT] ${out}`);
+      
       if (out.includes('Ready') || out.includes('ready in')) {
         nextReady = true;
+        isCompiling = false;
+        compileVersion++;
         console.log('[Worker] NEXT_READY_SIGNAL');
+      }
+      
+      if (out.toLowerCase().includes('compiling')) {
+        isCompiling = true;
+      }
+      
+      if (out.toLowerCase().includes('compiled')) {
+        isCompiling = false;
+        compileVersion++;
       }
     });
 
@@ -210,6 +292,10 @@ async function main() {
       process.exit(1);
     });
   });
+
+  console.log(`[Worker] Startup complete. Waiting for requests...`);
+  // Keep-alive promise to ensure main never resolves
+  return new Promise(() => {});
 }
 
 main().catch(err => {

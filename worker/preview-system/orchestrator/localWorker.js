@@ -18,6 +18,7 @@ async function createLocalWorker(sessionId) {
     `--name ${containerName}`,
     `-p ${port}:3000`,
     `-e AUTH_TOKEN=${AUTH_TOKEN}`,
+    `-e NODE_OPTIONS="--max-old-space-size=450"`,
     `--memory=600m`,
     `--cpus=1`,
     WORKER_IMAGE
@@ -70,8 +71,21 @@ async function findFreePort(start, end) {
   throw new Error('No free ports available in range 4000-4099');
 }
 
+// ─── Check if a container is actually running ───────────────────────────
+async function isWorkerRunning(containerName) {
+  try {
+    const { stdout } = await execAsync(
+      `docker inspect --format='{{.State.Running}}' ${containerName} 2>/dev/null`
+    );
+    return stdout.trim() === 'true';
+  } catch (err) {
+    return false;
+  }
+}
+
 module.exports = {
   createLocalWorker,
   waitForWorkerReady,
-  deleteLocalWorker
+  deleteLocalWorker,
+  isWorkerRunning
 };

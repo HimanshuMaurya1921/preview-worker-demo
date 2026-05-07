@@ -16,8 +16,10 @@ spec:
       serviceAccountName: orchestrator
       containers:
       - name: orchestrator
+        # REPLACE with your GCR/Artifact Registry image: gcr.io/PROJECT/orchestrator:latest
+        # image: REPLACE_WITH_YOUR_REGISTRY_IMAGE
         image: orchestrator:local
-        imagePullPolicy: IfNotPresent
+        imagePullPolicy: Always
         ports:
         - containerPort: 3001
         env:

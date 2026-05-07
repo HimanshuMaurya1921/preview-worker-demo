@@ -1,5 +1,8 @@
 const express = require('express');
 const { createProxyMiddleware } = require('http-proxy-middleware');
+const { exec } = require('child_process');
+const util = require('util');
+const execAsync = util.promisify(exec);
 const crypto = require('crypto');
 
 const IS_GKE = process.env.RUNTIME === 'gke';
@@ -20,20 +23,84 @@ module.exports = function() {
   }
 
   router.post('/start', async (req, res) => {
-    const { projectId, files } = req.body;
-    if (!files || !projectId) return res.status(400).json({ error: 'projectId and files required' });
+    const { projectId, userId, files } = req.body;
+    
+    // sessionKey ensures one pod per user. Fallback to projectId for legacy support.
+    const sessionKey = userId || projectId;
+    
+    if (!sessionKey) {
+      return res.status(400).json({ error: 'Missing userId or projectId' });
+    }
+    
+    if (!files) return res.status(400).json({ error: 'files required' });
 
-    // Clean up any existing session for this project
-    if (sessions.has(projectId)) {
-      const old = sessions.get(projectId);
+    // ─── Warm Update Logic: Check if a healthy session exists for this user ───
+    if (sessions.has(sessionKey)) {
+      const existing = sessions.get(sessionKey);
+      console.log(`[Orchestrator] Existing session found for ${sessionKey}. Verifying health...`);
+      
       try {
-        if (IS_GKE) await backend.deletePreviewPod(old.workerId);
-        else await backend.deleteLocalWorker(old.workerId);
-      } catch (err) {}
-      sessions.delete(projectId);
+        // 1. Double check: Is the container/pod actually running?
+        const isRunning = await backend.isWorkerRunning(existing.workerId);
+        if (!isRunning) throw new Error('Worker not running');
+
+        // 2. Get initial compile version with strict timeout
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 2000);
+        
+        const healthRes = await fetch(`http://${existing.workerHost}:${existing.workerPort}/__health`, {
+          signal: controller.signal
+        });
+        clearTimeout(timeoutId);
+        
+        const healthData = await healthRes.json();
+        const initialVersion = healthData.compileVersion || 0;
+
+        const injectRes = await fetch(`http://${existing.workerHost}:${existing.workerPort}/__inject`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'x-worker-auth': AUTH_TOKEN },
+          body: JSON.stringify({ files, wipe: true })
+        });
+
+        if (injectRes.ok) {
+          // 2. Poll until compileVersion increments
+          console.log(`[Orchestrator] Waiting for compilation (Version ${initialVersion} -> ${initialVersion + 1})...`);
+          let ready = false;
+          let attempts = 0;
+          while (!ready && attempts < 20) { // 10s max timeout
+            await new Promise(r => setTimeout(r, 500));
+            attempts++;
+            try {
+              const pollRes = await fetch(`http://${existing.workerHost}:${existing.workerPort}/__health`);
+              const pollData = await pollRes.json();
+              if (pollData.compileVersion > initialVersion && !pollData.isCompiling) {
+                ready = true;
+              }
+            } catch (e) {}
+          }
+
+          return res.json({ 
+            workerId: existing.workerId, 
+            previewUrl: `http://localhost:${process.env.WORKER_PORT || 3001}/api/preview/proxy/${existing.workerId}/`,
+            warm: true 
+          });
+        }
+      } catch (err) {
+        console.warn(`[Orchestrator] Session health check failed for ${existing.workerId}: ${err.message}`);
+        sessions.delete(sessionKey);
+        try {
+          if (IS_GKE) backend.deletePreviewPod(existing.workerId).catch(() => {});
+          else backend.deleteLocalWorker(existing.workerId).catch(() => {});
+        } catch (e) {}
+        
+        return res.json({ 
+          status: 'expired', 
+          message: 'Preview container was recycled due to inactivity. Re-booting...' 
+        });
+      }
     }
 
-    // On GKE: check cluster capacity before creating pod
+    // ─── Cold Start Path ───
     if (IS_GKE) {
       const { active, max } = await backend.getClusterCapacity();
       if (active >= max) {
@@ -81,11 +148,12 @@ module.exports = function() {
 
       if (!injectRes.ok) throw new Error(`Inject failed: ${await injectRes.text()}`);
 
-      sessions.set(projectId, { workerId, workerHost, workerPort });
+      sessions.set(sessionKey, { workerId, workerHost, workerPort, projectId, userId });
       
       res.json({ 
         workerId, 
-        previewUrl: `http://localhost:${process.env.WORKER_PORT || 3001}/api/preview/proxy/${workerId}/` 
+        previewUrl: `http://localhost:${process.env.WORKER_PORT || 3001}/api/preview/proxy/${workerId}/`,
+        warm: false
       });
 
     } catch (err) {
@@ -101,7 +169,8 @@ module.exports = function() {
     const session = [...sessions.values()].find(s => s.workerId === workerId);
     if (!session) return res.status(404).json({ error: 'Session not found' });
 
-    if (projectId && sessions.get(projectId)?.workerId !== workerId) {
+    // Verify that the projectId matches the session (if provided)
+    if (projectId && session.projectId !== projectId) {
       return res.status(403).json({ error: 'Session mismatch' });
     }
 
@@ -157,10 +226,13 @@ module.exports = function() {
   router.use('/proxy/:workerId', (req, res, next) => {
     const { workerId } = req.params;
     const session = [...sessions.values()].find(s => s.workerId === workerId);
-
+    
     if (!session) {
+      console.warn(`[Proxy] Session NOT FOUND for workerId: ${workerId}`);
       return res.status(404).send('Preview not found or expired');
     }
+
+    console.log(`[Proxy] Routing ${workerId} -> ${session.workerHost}:${session.workerPort}`);
 
     // Set a cookie so root-level asset requests know which worker to talk to
     res.cookie('preview-worker-id', workerId, { path: '/', httpOnly: true, sameSite: 'lax' });
@@ -170,8 +242,18 @@ module.exports = function() {
       changeOrigin: true,
       ws: true,
       logLevel: 'silent',
-      pathRewrite: {
-        [`^/api/preview/proxy/${workerId}`]: '',
+      onError: (err, req, res) => {
+        console.error(`[Proxy Error] ${workerId}:`, err.message);
+        if (!res.headersSent) {
+          res.status(502).send(`Worker communication failed: ${err.message}`);
+        }
+      },
+      onProxyRes: (proxyRes) => {
+        // Disable caching for preview assets to ensure 100% fresh UI
+        proxyRes.headers['cache-control'] = 'no-store, no-cache, must-revalidate, proxy-revalidate';
+        proxyRes.headers['pragma'] = 'no-cache';
+        proxyRes.headers['expires'] = '0';
+        proxyRes.headers['surrogate-control'] = 'no-store';
       },
     })(req, res, next);
   });

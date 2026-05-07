@@ -66,25 +66,27 @@ const server = app.listen(PORT, () => {
 
 // Handle WebSocket upgrades for HMR
 server.on('upgrade', (req, socket, head) => {
-  const cookieParser = require('cookie-parser');
-  // We need a dummy response object for cookie-parser to work
-  cookieParser()(req, {}, () => {
-    const workerId = req.cookies['preview-worker-id'];
-    const session = workerId ? orchestrator.getSessionByWorkerId(workerId) : null;
+  // Manual cookie parsing for WebSocket upgrade requests
+  const cookieHeader = req.headers.cookie || '';
+  const cookies = Object.fromEntries(
+    cookieHeader.split(';').map(c => c.trim().split('='))
+  );
+  
+  const workerId = cookies['preview-worker-id'];
+  const session = workerId ? orchestrator.getSessionByWorkerId(workerId) : null;
 
-    if (session) {
-      const { createProxyMiddleware } = require('http-proxy-middleware');
-      const proxy = createProxyMiddleware({
-        target: `http://${session.workerHost}:${session.workerPort}`,
-        ws: true,
-        changeOrigin: true,
-        logLevel: 'silent'
-      });
-      proxy.upgrade(req, socket, head);
-    } else {
-      socket.destroy();
-    }
-  });
+  if (session) {
+    const { createProxyMiddleware } = require('http-proxy-middleware');
+    const proxy = createProxyMiddleware({
+      target: `http://${session.workerHost}:${session.workerPort}`,
+      ws: true,
+      changeOrigin: true,
+      logLevel: 'silent'
+    });
+    proxy.upgrade(req, socket, head);
+  } else {
+    socket.destroy();
+  }
 });
 
 // Graceful shutdown

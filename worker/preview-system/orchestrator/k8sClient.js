@@ -75,7 +75,16 @@ async function createPreviewPod(sessionId, projectId) {
         ports: [{ containerPort: 3000 }],
         env: [
           { name: 'AUTH_TOKEN', value: AUTH_TOKEN },
-          { name: 'WORKSPACE', value: '/workspace' }
+          { name: 'WORKSPACE', value: '/workspace' },
+          { name: 'NODE_OPTIONS', value: '--max-old-space-size=450' },
+          {
+            name: 'POD_NAME',
+            valueFrom: {
+              fieldRef: {
+                fieldPath: 'metadata.name'
+              }
+            }
+          }
         ],
         resources: {
           requests: { memory: '350Mi', cpu: '250m' },
@@ -185,6 +194,16 @@ async function getClusterCapacity() {
   return { active, max: MAX_PODS };
 }
 
+// ─── Check if a pod is actually running ───────────────────────────────────────
+async function isWorkerRunning(podName) {
+  try {
+    const { body } = await coreApi.readNamespacedPod(podName, NAMESPACE);
+    return body.status?.phase === 'Running';
+  } catch (err) {
+    return false;
+  }
+}
+
 // ─── Reconcile sessions on orchestrator restart ───────────────────────────────
 async function reconcileSessions(sessions) {
   try {
@@ -199,9 +218,16 @@ async function reconcileSessions(sessions) {
       const projectId = pod.metadata.labels?.project;
       const podName = pod.metadata.name;
       const phase = pod.status?.phase;
+      const ip = pod.status?.podIP;
 
-      if (projectId && (phase === 'Running' || phase === 'Pending')) {
-        sessions.set(projectId, podName);
+      if (projectId && ip && (phase === 'Running' || phase === 'Pending')) {
+        // Must store as object to match orchestrator/index.js expectations
+        sessions.set(projectId, {
+          workerId: podName,
+          workerHost: ip,
+          workerPort: 3000,
+          projectId: projectId
+        });
         count++;
       }
     }
@@ -218,5 +244,6 @@ module.exports = {
   deletePreviewPod,
   getPodIP,
   getClusterCapacity,
-  reconcileSessions
+  reconcileSessions,
+  isWorkerRunning
 };
