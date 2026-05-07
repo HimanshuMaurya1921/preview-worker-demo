@@ -12,10 +12,10 @@ kind create cluster --name ai-studio --config kind-config.yaml
 
 ### 1.2 Build & Load Images
 ```bash
-# Build Worker
+# Build Worker (Next.js runner)
 docker build -t preview-worker:local ./worker
 
-# Build Orchestrator
+# Build Orchestrator (K8s API client)
 docker build -t orchestrator:local -f ./worker/Dockerfile.orchestrator ./worker
 
 # Load into KIND
@@ -65,7 +65,7 @@ kubectl port-forward svc/orchestrator 3001:80
 ```bash
 cd backend
 npm install
-npm run dev # Typically runs on port 3000 or 4000
+npm run dev
 ```
 
 ### 3.2 Start Frontend
@@ -73,17 +73,19 @@ Ensure your Frontend is configured to use `http://localhost:3001` for previews.
 ```bash
 cd frontend
 npm install
-npm run dev # Typically runs on port 5173 or 3000
+npm run dev
 ```
 
 ## 4. End-to-End Verification
 
 1. **Open Browser**: Go to the local Frontend URL.
 2. **Generate Code**: Trigger an AI generation.
-3. **Verify Orchestration**:
+3. **Sticky Session Verification**:
+    - The first time you hit the preview, the Orchestrator sets a `preview-worker-id` cookie.
+    - All subsequent requests for `/_next/static`, `/api`, and WebSockets (HMR) will be routed automatically to your specific pod.
+4. **Verify Orchestration**:
     - Watch pods in KIND: `kubectl get pods -n preview -w`
     - You should see a `preview-xxxxx` pod transition from `Pending` -> `ContainerCreating` -> `Running`.
-4. **View Preview**: The iframe in your frontend should load the Next.js app served from inside the KIND pod.
 
 ## 5. Heavy Testing (Stress Suite)
 
@@ -96,15 +98,23 @@ npm run dev # Typically runs on port 5173 or 3000
    ```bash
    kubectl annotate pod <pod-name> -n preview created-at=1609459200000 --overwrite
    ```
-2. Wait 2 minutes or trigger the job manually:
+2. Wait for the CronJob (runs every minute) or trigger manually:
    ```bash
    kubectl create job --from=cronjob/preview-pod-ttl-cleanup manual-cleanup -n preview
    ```
-3. Verify the pod is deleted.
 
 ### 5.3 Liveness Probe Recovery
 1. Kill the node process inside a pod:
    ```bash
    kubectl exec -n preview <pod-name> -- pkill -9 node
    ```
-2. Verify the pod status changes to `Error` and eventually get reaped (since `restartPolicy: Never`).
+2. Verify the pod status changes to `Error` and eventually get reaped.
+
+## 🛠 Troubleshooting
+
+| Issue | Cause | Fix |
+|-------|-------|-----|
+| `CreateContainerConfigError` | Missing secret in `default` namespace | Run the `kubectl create secret` command in step 1.3 |
+| `Completed` Status on Workers | `node_modules` missing in `/workspace` | Ensure you ran `docker build` AFTER the symlink fix in `worker.js` |
+| 404 for `_next/static` | Cookie missing or proxy misconfigured | Clear your cookies for `localhost:3001` and reload the preview URL |
+| `MODULE_NOT_FOUND` | Dependency missing in `package.json` | Ensure `@kubernetes/client-node` and `cookie-parser` are in `worker/package.json` |
