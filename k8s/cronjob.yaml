@@ -51,7 +51,7 @@ spec:
               # TTL Cutoff in milliseconds:
               # - Production: 300000 (5 minutes)
               # - Local Test: 60000 (1 minute)
-              CUTOFF=$(( $(date +%s%3N) - 60000 ))
+              CUTOFF=$(( $(date +%s%3N) - 180000 ))
               kubectl get pods -n preview \
                 -l app=preview-worker \
                 --output=json | \

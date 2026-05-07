@@ -162,6 +162,9 @@ module.exports = function() {
       return res.status(404).send('Preview not found or expired');
     }
 
+    // Set a cookie so root-level asset requests know which worker to talk to
+    res.cookie('preview-worker-id', workerId, { path: '/', httpOnly: true, sameSite: 'lax' });
+
     createProxyMiddleware({
       target: `http://${session.workerHost}:${session.workerPort}`,
       changeOrigin: true,
@@ -173,5 +176,10 @@ module.exports = function() {
     })(req, res, next);
   });
 
-  return router;
+  return {
+    router,
+    getSessionByWorkerId: (workerId) => {
+      return [...sessions.values()].find(s => s.workerId === workerId);
+    }
+  };
 };
