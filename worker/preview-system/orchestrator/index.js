@@ -44,18 +44,6 @@ module.exports = function() {
         const isRunning = await backend.isWorkerRunning(existing.workerId);
         if (!isRunning) throw new Error('Worker not running');
 
-        // 2. Get initial compile version with strict timeout
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 2000);
-        
-        const healthRes = await fetch(`http://${existing.workerHost}:${existing.workerPort}/__health`, {
-          signal: controller.signal
-        });
-        clearTimeout(timeoutId);
-        
-        const healthData = await healthRes.json();
-        const initialVersion = healthData.compileVersion || 0;
-
         const injectRes = await fetch(`http://${existing.workerHost}:${existing.workerPort}/__inject`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', 'x-worker-auth': AUTH_TOKEN },
@@ -63,22 +51,6 @@ module.exports = function() {
         });
 
         if (injectRes.ok) {
-          // 2. Poll until compileVersion increments
-          console.log(`[Orchestrator] Waiting for compilation (Version ${initialVersion} -> ${initialVersion + 1})...`);
-          let ready = false;
-          let attempts = 0;
-          while (!ready && attempts < 20) { // 10s max timeout
-            await new Promise(r => setTimeout(r, 500));
-            attempts++;
-            try {
-              const pollRes = await fetch(`http://${existing.workerHost}:${existing.workerPort}/__health`);
-              const pollData = await pollRes.json();
-              if (pollData.compileVersion > initialVersion && !pollData.isCompiling) {
-                ready = true;
-              }
-            } catch (e) {}
-          }
-
           return res.json({ 
             workerId: existing.workerId, 
             previewUrl: `http://localhost:${process.env.WORKER_PORT || 3001}/api/preview/proxy/${existing.workerId}/`,

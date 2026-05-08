@@ -6,11 +6,17 @@
     "start": "node server.js"
   },
   "dependencies": {
+    "@kubernetes/client-node": "^0.21.0",
+    "cookie-parser": "^1.4.7",
     "cors": "^2.8.6",
     "dotenv": "^17.4.2",
     "express": "^5.2.1",
-    "http-proxy-middleware": "^3.0.5",
-    "@kubernetes/client-node": "^0.21.0",
-    "cookie-parser": "^1.4.7"
+    "http-proxy-middleware": "^3.0.5"
+  },
+  "devDependencies": {
+    "@types/node": "^25.6.2",
+    "@types/react": "^19.2.14",
+    "@types/react-dom": "^19.2.3",
+    "typescript": "^6.0.3"
   }
 }

@@ -15,8 +15,7 @@ const AUTH_TOKEN = process.env.AUTH_TOKEN || 'local-dev-token';
 
 // ─── State ────────────────────────────────────────────────────────────────────
 let nextReady = false;
-let compileVersion = 0;
-let isCompiling = false;
+let nextProc;
 
 async function prepareWorkspace(workDir) {
   const start = Date.now();
@@ -27,7 +26,7 @@ async function prepareWorkspace(workDir) {
   
   // High-performance shell-based copy
   console.log(`[Worker] Copying template files...`);
-  await execAsync(`cp -rn ${templateDir}/. ${workDir}/`);
+  await execAsync(`cp -rn "${templateDir}/." "${workDir}/"`);
   console.log(`[Worker] Template copy took ${Date.now() - start}ms`);
 
   const centralModules = '/app/central_modules/node_modules';
@@ -84,8 +83,16 @@ async function main() {
   };
 
   process.on('exit', cleanup);
-  process.on('SIGINT', () => process.exit(0));
-  process.on('SIGTERM', () => process.exit(0));
+  process.on('SIGINT', () => {
+    console.log('[Worker] SIGINT received. Cleaning up...');
+    if (nextProc) nextProc.kill('SIGINT');
+    process.exit(0);
+  });
+  process.on('SIGTERM', () => {
+    console.log('[Worker] SIGTERM received. Cleaning up...');
+    if (nextProc) nextProc.kill('SIGTERM');
+    process.exit(0);
+  });
 
   process.on('uncaughtException', (err) => {
     console.error('[Worker Uncaught Exception]', err);
@@ -115,8 +122,6 @@ async function main() {
     res.json({ 
       status: nextReady ? 'ready' : 'booting',
       ready: nextReady,
-      isCompiling,
-      compileVersion,
       podName: process.env.POD_NAME || 'local-worker'
     });
   });
@@ -247,7 +252,19 @@ export default function PreviewBadge() {
     console.log(`[Worker] Starting Next.js dev server in ${workDir}...`);
     
     const nextBin = path.join(workDir, 'node_modules', '.bin', 'next');
-    nextProc = spawn(nextBin, ['dev', '--turbo', '-p', NEXT_PORT.toString()], {
+    
+    // Startup Diagnostics
+    console.log(`[Worker] Checking for Next.js binary at: ${nextBin}`);
+    const nextExists = fsSync.existsSync(nextBin);
+    console.log(`[Worker] Next.js binary exists? ${nextExists}`);
+
+    if (!nextExists) {
+      console.error(`[Worker] CRITICAL: Next.js binary NOT FOUND at ${nextBin}`);
+      // Don't exit, let the pod stay alive for debugging
+      return;
+    }
+
+    nextProc = spawn(nextBin, ['dev', '-p', NEXT_PORT.toString()], {
       cwd: workDir,
       env: { 
         ...process.env, 
@@ -263,18 +280,7 @@ export default function PreviewBadge() {
       
       if (out.includes('Ready') || out.includes('ready in')) {
         nextReady = true;
-        isCompiling = false;
-        compileVersion++;
         console.log('[Worker] NEXT_READY_SIGNAL');
-      }
-      
-      if (out.toLowerCase().includes('compiling')) {
-        isCompiling = true;
-      }
-      
-      if (out.toLowerCase().includes('compiled')) {
-        isCompiling = false;
-        compileVersion++;
       }
     });
 
@@ -284,12 +290,19 @@ export default function PreviewBadge() {
 
     nextProc.on('exit', (code, signal) => {
       console.log(`[Worker] Next.js process exited with code ${code} and signal ${signal}`);
-      process.exit(code !== null ? code : 1);
+      nextReady = false;
+      // In production/GKE, we might want the pod to restart if Next crashes.
+      // But for debugging "Completed" pods, we can keep the worker alive briefly.
+      if (!process.env.RUNTIME) {
+        process.exit(code !== null ? code : 1);
+      } else {
+        console.warn('[Worker] Next.js exited but keeping worker alive for logs. Pod will become Unready.');
+      }
     });
 
     nextProc.on('error', (err) => {
       console.error(`[Worker] Failed to start Next.js process:`, err);
-      process.exit(1);
+      nextReady = false;
     });
   });
 

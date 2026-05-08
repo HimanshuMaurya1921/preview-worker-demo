@@ -16,10 +16,22 @@ export function usePreview({ projectId, files, apiBase = '', onReady }: UsePrevi
   const prevFilesRef = useRef<Record<string, any>>({});
 
   useEffect(() => {
-    if (JSON.stringify(files) === JSON.stringify(prevFilesRef.current)) {
+    const isProjectSwitch = prevFilesRef.current.projectId && prevFilesRef.current.projectId !== projectId;
+    const prevFiles = { ...prevFilesRef.current };
+    delete prevFiles.projectId;
+
+    const filesChanged = JSON.stringify(files) !== JSON.stringify(prevFiles);
+
+    if (!filesChanged && !isProjectSwitch) {
       return;
     }
-    prevFilesRef.current = files;
+
+    if (isProjectSwitch) {
+      setWorkerId(null);
+      setPreviewUrl(null);
+    }
+    
+    prevFilesRef.current = { ...files, projectId };
 
     if (Object.keys(files).length === 0) return;
 

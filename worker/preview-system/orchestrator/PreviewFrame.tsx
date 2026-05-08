@@ -18,7 +18,7 @@ export const PreviewFrame: React.FC<PreviewFrameProps> = ({ projectId, files, ap
 
   return (
     <div className={`relative w-full h-full bg-white ${className || ''}`}>
-      {loading && (
+      {loading && !previewUrl && (
         <div className="absolute inset-0 z-10 flex flex-col items-center justify-center bg-white/80 backdrop-blur-sm">
           <div className="w-8 h-8 border-4 border-blue-500 border-t-transparent rounded-full animate-spin mb-4"></div>
           <p className="text-gray-600 font-medium">Booting Next.js Environment...</p>
@@ -26,6 +26,7 @@ export const PreviewFrame: React.FC<PreviewFrameProps> = ({ projectId, files, ap
       )}
       {previewUrl && (
         <iframe
+          key={projectId}
           src={previewUrl}
           className="w-full h-full border-0"
           title="Live Preview"

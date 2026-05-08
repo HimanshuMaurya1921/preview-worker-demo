@@ -77,6 +77,7 @@ async function createPreviewPod(sessionId, projectId) {
           { name: 'AUTH_TOKEN', value: AUTH_TOKEN },
           { name: 'WORKSPACE', value: '/workspace' },
           { name: 'NODE_OPTIONS', value: '--max-old-space-size=450' },
+          { name: 'RUNTIME', value: process.env.RUNTIME || 'gke' },
           {
             name: 'POD_NAME',
             valueFrom: {
