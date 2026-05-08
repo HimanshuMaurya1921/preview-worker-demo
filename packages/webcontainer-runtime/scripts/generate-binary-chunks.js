@@ -49,6 +49,16 @@ function walk(dir) {
 }
 
 async function main() {
+  console.log(`[Snapshot] Cleaning old chunks in ${OUTPUT_DIR}...`);
+  if (fs.existsSync(OUTPUT_DIR)) {
+    const existingFiles = fs.readdirSync(OUTPUT_DIR);
+    existingFiles.forEach(file => {
+      if (file.endsWith('.wasm')) {
+        fs.unlinkSync(path.join(OUTPUT_DIR, file));
+      }
+    });
+  }
+
   console.log(`[Snapshot] Walking ${SOURCE_DIR}...`);
   const files = walk(SOURCE_DIR);
   console.log(`[Snapshot] Found ${files.length} valid files.`);

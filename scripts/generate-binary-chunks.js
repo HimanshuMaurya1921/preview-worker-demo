@@ -2,7 +2,7 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 
-const SOURCE_DIR = path.join(__dirname, '../worker/preview-system/preview-worker/template');
+const SOURCE_DIR = path.join(__dirname, '../template');
 const OUTPUT_DIR = path.join(__dirname, '../frontend/public/snapshot');
 const CHUNK_SIZE_LIMIT = 5 * 1024 * 1024; // 5MB chunks
 const SNAPSHOT_VERSION = Date.now().toString().slice(-6); // Simple versioning
@@ -52,6 +52,16 @@ function walk(dir) {
 }
 
 async function main() {
+  console.log(`[Snapshot] Cleaning old chunks in ${OUTPUT_DIR}...`);
+  if (fs.existsSync(OUTPUT_DIR)) {
+    const existingFiles = fs.readdirSync(OUTPUT_DIR);
+    existingFiles.forEach(file => {
+      if (file.endsWith('.wasm')) {
+        fs.unlinkSync(path.join(OUTPUT_DIR, file));
+      }
+    });
+  }
+
   console.log(`[Snapshot] Walking ${SOURCE_DIR}...`);
   const files = walk(SOURCE_DIR);
   console.log(`[Snapshot] Found ${files.length} valid files.`);

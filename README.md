@@ -5,20 +5,19 @@ A high-performance, client-side runtime for AI-generated Next.js applications. T
 ## 🚀 Quick Start
 
 ### 0. Setup Runtime Template
-The snapshot needs a source directory (`template`) with Next.js and React installed.
+The snapshot needs a source directory (`template`) with Next.js and React installed. This forms the base layer for the container.
 ```bash
-mkdir -p template
 cd template
-# Create a minimal package.json
-echo '{"dependencies": {"next": "14.2.29", "react": "18.2.0", "react-dom": "18.2.0"}}' > package.json
-npm install # This creates the critical node_modules layer
+# Install dependencies (this creates the critical node_modules layer)
+npm install 
 cd ..
 ```
 
 ### 1. Prerequisite: Snapshot Generation
+Generate the binary chunks that the browser will download to "boot" the container.
 ```bash
 # From the root directory
-node packages/webcontainer-runtime/scripts/generate-binary-chunks.js
+node scripts/generate-binary-chunks.js
 ```
 This will create `manifest.json` and `.wasm` chunks in `frontend/public/snapshot/`.
 
