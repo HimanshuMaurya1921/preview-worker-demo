@@ -1,11 +1,17 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { PreviewFrame } from './components/PreviewFrame';
+import { webContainerClient } from './lib/webcontainer-client';
 
 export default function App() {
   const [files, setFiles] = useState({});
   const [projectId] = useState(`project-${Date.now()}`);
   const [isGenerating, setIsGenerating] = useState(false);
   const [userName, setUserName] = useState('');
+
+  // Proactive boot on mount
+  useEffect(() => {
+    webContainerClient.init();
+  }, []);
 
   const handleGenerateNext = async () => {
     setIsGenerating(true);
@@ -23,47 +29,46 @@ export default function App() {
 
   return (
     <div className="grid grid-cols-2 h-screen">
-      <div className="p-6 bg-slate-50 flex flex-col items-start gap-4">
-        <h1 className="text-2xl font-bold">AI Studio Preview Demo</h1>
-        <p className="text-gray-600">Enter your name and generate a personalized Next.js project.</p>
-        
-        <input 
-          type="text"
-          placeholder="Enter your name"
-          value={userName}
-          onChange={(e) => setUserName(e.target.value)}
-          className="px-4 py-2 border rounded w-full max-w-xs focus:ring-2 focus:ring-black outline-none"
-        />
+      <div className="p-12 bg-white flex flex-col items-start gap-8">
+        <div className="space-y-2">
+          <h1 className="text-4xl font-black uppercase tracking-tighter italic">AI Studio</h1>
+          <p className="text-gray-400 text-sm font-mono uppercase tracking-widest">Next.js WebContainer Runtime</p>
+        </div>
 
-        <div className="flex gap-4">
+        <div className="w-full max-w-sm space-y-4">
+          <div className="space-y-1">
+            <label className="text-[10px] font-bold uppercase tracking-widest text-gray-400">Project Personalization</label>
+            <input 
+              type="text"
+              placeholder="ENTER YOUR NAME"
+              value={userName}
+              onChange={(e) => setUserName(e.target.value)}
+              className="px-4 py-3 bg-gray-100 border-none rounded-none w-full focus:ring-2 focus:ring-black outline-none font-bold placeholder:text-gray-300"
+            />
+          </div>
+
           <button 
             onClick={handleGenerateNext}
-            className="px-4 py-2 bg-black text-white rounded hover:bg-gray-800"
+            className="w-full py-4 bg-black text-white rounded-none hover:bg-gray-800 transition-all font-black uppercase tracking-widest text-xs disabled:opacity-50"
             disabled={isGenerating}
           >
-            {isGenerating ? 'Loading...' : 'Generate Next.js Demo'}
+            {isGenerating ? 'Synthesizing...' : 'Generate Next.js Project'}
           </button>
         </div>
 
-        <div className="mt-auto w-full p-4 bg-white rounded border border-gray-200 text-sm">
-          <div className="text-gray-500 mb-2 font-semibold">Infrastructure Status</div>
-          <div className="flex justify-between">
-            <span>Runtime</span>
-            <span className="text-blue-600 font-bold">K8s / KIND</span>
-          </div>
-          <div className="flex justify-between mt-1">
-            <span>User ID</span>
-            <span className="text-gray-400 font-mono text-xs">{localStorage.getItem('preview_user_id') || 'Initializing...'}</span>
-          </div>
+        <div className="mt-auto">
+          <p className="text-[10px] text-gray-300 max-w-xs leading-relaxed font-medium">
+            This preview runs entirely in your browser using WebContainers. 
+            No server-side pods are used. Optimized for Next.js AI generation.
+          </p>
         </div>
       </div>
 
-      <div className="border-l border-gray-200">
+      <div className="bg-gray-100 p-4">
         <PreviewFrame
           projectId={projectId}
           files={files}
-          apiBase={import.meta.env.VITE_WORKER_URL || 'http://localhost:3001'}
-          className="border-0"
+          className="shadow-2xl h-full"
         />
       </div>
     </div>

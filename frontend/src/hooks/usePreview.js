@@ -1,143 +1,87 @@
 import { useState, useEffect, useRef } from 'react';
+import { webContainerClient } from '../lib/webcontainer-client';
+import { AiOutputNormalizer } from '../lib/ai-output-normalizer';
 
-/**
- * Deterministic stringify to prevent unnecessary re-renders when object keys change order.
- */
-function stableStringify(obj) {
-  if (obj === null || typeof obj !== 'object') {
-    return JSON.stringify(obj);
+const flattenFiles = (obj, prefix = '') => {
+  let flat = {};
+  for (const [key, value] of Object.entries(obj)) {
+    const currentPath = prefix ? `${prefix}/${key}` : key;
+    if (typeof value === 'string') {
+      flat[currentPath] = value;
+    } else if (value && typeof value === 'object') {
+      if (value.file && typeof value.file.contents === 'string') {
+        flat[currentPath] = value.file.contents;
+      } else if (value.directory) {
+        Object.assign(flat, flattenFiles(value.directory, currentPath));
+      } else if (typeof value.contents === 'string') {
+        flat[currentPath] = value.contents;
+      }
+    }
   }
-  if (Array.isArray(obj)) {
-    return '[' + obj.map(stableStringify).join(',') + ']';
-  }
-  const keys = Object.keys(obj).sort();
-  return '{' + keys.map(k => `${JSON.stringify(k)}:${stableStringify(obj[k])}`).join(',') + '}';
-}
+  return flat;
+};
 
-export function usePreview({ projectId, files, apiBase = '', onReady }) {
-  const [workerId, setWorkerId] = useState(null);
+export function usePreview({ projectId, files, onReady }) {
   const [previewUrl, setPreviewUrl] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
+  const [status, setStatus] = useState('Initializing Runtime...');
 
-  const prevFilesRef = useRef('');
-  const workerIdRef = useRef(null);
-  const apiBaseRef = useRef(apiBase);
-
-  // Sync state to refs for reliable cleanup
-  useEffect(() => {
-    workerIdRef.current = workerId;
-    apiBaseRef.current = apiBase;
-  }, [workerId, apiBase]);
+  const normalizerRef = useRef(null);
 
   useEffect(() => {
-    const currentFilesStr = stableStringify(files);
-    
-    // Only return early if content is identical AND we have a worker pod
-    if (currentFilesStr === prevFilesRef.current && workerId) {
-      // Perform a quick health check to see if we need a silent re-boot.
-      fetch(`${apiBase}/api/preview/proxy/${workerId}/__health`)
-        .then(res => { if (!res.ok) setWorkerId(null); })
-        .catch(() => setWorkerId(null));
-      return;
-    }
-    
-    // If we reach here, either the content changed OR the pod was reaped (workerId is null)
-    prevFilesRef.current = currentFilesStr;
+    let active = true;
 
-    if (Object.keys(files).length === 0) return;
-
-    // Set loading immediately to show the overlay even during the debounce period
-    setLoading(true);
-
-    const startOrUpdate = async () => {
+    const initRuntime = async () => {
       try {
-        // Generate/Retrieve stable userId for pod reuse
-        let userId = localStorage.getItem('preview_user_id');
-        if (!userId) {
-          userId = `user-${Math.random().toString(36).substring(2, 11)}`;
-          localStorage.setItem('preview_user_id', userId);
+        setLoading(true);
+        setStatus('Booting WebContainer...');
+        const wc = await webContainerClient.init();
+        
+        if (!normalizerRef.current) {
+          normalizerRef.current = new AiOutputNormalizer(wc);
         }
 
-        // Set a fail-safe timeout: if we're still booting after 60s, something is wrong
-        const failSafeId = setTimeout(() => {
-          if (loading || !workerId) {
-            setLoading(false);
-            setError('Preview boot timed out. The pod might be overloaded. Please try again.');
-          }
-        }, 60000);
-
-        // Always use /start to trigger Orchestrator's reuse logic
-        const res = await fetch(`${apiBase}/api/preview/start`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ projectId, userId, files })
-        });
-        
-        clearTimeout(failSafeId);
-        const data = await res.json();
-        if (!res.ok) throw new Error(data.error);
-        
-        // Handle Self-Healing: If session expired, clear ID and re-trigger immediately
-        if (data.status === 'expired') {
-          console.warn('[usePreview] Session expired (Pod recycled). Re-triggering cold start...');
-          setWorkerId(null);
-          return; // The useEffect will re-run automatically because workerId changed
-        }
-        
-        setWorkerId(data.workerId);
-        
-        // Let the UI know if this was a warm update vs cold boot
-        const isWarm = data.warm || false;
-        
-        let url;
-        if (import.meta.env.DEV) {
-          try {
-            const previewOrigin = new URL(data.previewUrl);
-            const baseOrigin = new URL(apiBase || window.location.origin);
-            previewOrigin.hostname = baseOrigin.hostname;
-            url = previewOrigin.toString();
-          } catch (e) {
-            url = data.previewUrl;
-          }
+        if (Object.keys(files).length > 0) {
+          setStatus('Injecting Files...');
+          const flatFiles = flattenFiles(files);
+          await normalizerRef.current.patch(flatFiles);
+          
+          setStatus('Starting Next.js...');
+          await webContainerClient.startDevServer((url) => {
+            if (active) {
+              setPreviewUrl(url);
+              setLoading(false);
+              if (onReady) onReady(url);
+            }
+          });
         } else {
-          url = `${apiBase}/api/preview/proxy/${data.workerId}/`;
+          setLoading(false);
         }
-        
-        // Forced Refresh: Append a version tag
-        const freshUrl = `${url}${url.includes('?') ? '&' : '?'}v=${Date.now()}`;
-        
-        setPreviewUrl(freshUrl);
-        setLoading(false);
-        if (onReady) onReady(freshUrl, { warm: isWarm });
       } catch (err) {
-        setError(err.message);
-        setLoading(false);
+        console.error('[usePreview] Runtime Error:', err);
+        if (active) {
+          setError(err.message);
+          setLoading(false);
+        }
       }
     };
 
-    const timeout = setTimeout(startOrUpdate, 1200);
-    return () => clearTimeout(timeout);
-  }, [files, workerId, projectId, apiBase, onReady]);
+    initRuntime();
 
-  // Reliable Cleanup on Unmount
-  useEffect(() => {
     return () => {
-      const id = workerIdRef.current;
-      const base = apiBaseRef.current;
-      
-      if (id && base) {
-        console.log(`[usePreview] Cleaning up worker: ${id}`);
-        // Use keepalive to ensure the request finishes even if the tab is closing
-        fetch(`${base}/api/preview/stop`, {
-          method: 'DELETE',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ workerId: id }),
-          keepalive: true
-        }).catch(() => {});
-      }
+      active = false;
     };
-  }, []); // empty array — intentional
+  }, [files, onReady]);
 
-  return { previewUrl, loading, error };
+  const reset = async () => {
+    setLoading(true);
+    setStatus('Resetting Environment...');
+    await webContainerClient.reset();
+    normalizerRef.current.clearCache();
+    setLoading(false);
+    setPreviewUrl(null);
+  };
+
+  return { previewUrl, loading, error, status, reset };
 }
