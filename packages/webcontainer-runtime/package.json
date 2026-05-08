@@ -1,0 +1,13 @@
+{
+  "name": "@ai-studio/webcontainer-runtime",
+  "version": "1.0.0",
+  "description": "High-performance WebContainer runtime for AI-generated Next.js projects.",
+  "main": "src/lib/webcontainer-client.js",
+  "dependencies": {
+    "@webcontainer/api": "^1.6.4",
+    "fflate": "^0.8.2"
+  },
+  "peerDependencies": {
+    "react": "^18.0.0"
+  }
+}
