@@ -83,9 +83,21 @@ async function isWorkerRunning(containerName) {
   }
 }
 
+// ─── List all active container names ─────────────────────────────────────────
+async function listActiveWorkerIds() {
+  try {
+    const { stdout } = await execAsync('docker ps --filter "name=preview-" --format "{{.Names}}"');
+    return stdout.trim().split('\n').filter(Boolean);
+  } catch (err) {
+    console.error('[Local] Failed to list containers:', err.message);
+    throw err;
+  }
+}
+
 module.exports = {
   createLocalWorker,
   waitForWorkerReady,
   deleteLocalWorker,
-  isWorkerRunning
+  isWorkerRunning,
+  listActiveWorkerIds
 };

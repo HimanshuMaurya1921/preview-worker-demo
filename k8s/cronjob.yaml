@@ -48,15 +48,18 @@ spec:
             - /bin/sh
             - -c
             - |
-              # TTL Cutoff in milliseconds:
-              # - Production: 360000 (6 minutes)
-              # - Local Test: 60000 (1 minute)
-              CUTOFF=$(( $(date +%s%3N) - 360000 ))
-              kubectl get pods -n preview \
-                -l app=preview-worker \
-                --output=json | \
-              jq -r ".items[] | 
-                select(.metadata.annotations[\"created-at\"] | 
-                  tonumber < $CUTOFF) | 
-                .metadata.name" | \
-              xargs -r kubectl delete pod -n preview
+              # TTL Cutoff: 1800000ms (30 minutes)
+              CUTOFF=$(( $(date +%s%3N) - 1800000 ))
+              
+              kubectl get pods -n preview -l app=preview-worker -o=custom-columns=NAME:.metadata.name,TIME:.metadata.annotations.created-at --no-headers | \
+              while read name time; do
+                # Basic validation that time is a number
+                case $time in
+                    ''|*[!0-9]*) continue ;;
+                esac
+                
+                if [ "$time" -lt "$CUTOFF" ]; then
+                  echo "Deleting expired pod: $name"
+                  kubectl delete pod -n preview "$name" --wait=false
+                fi
+              done

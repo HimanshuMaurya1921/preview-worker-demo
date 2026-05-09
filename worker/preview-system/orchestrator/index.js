@@ -4,6 +4,7 @@ const { exec } = require('child_process');
 const util = require('util');
 const execAsync = util.promisify(exec);
 const crypto = require('crypto');
+const sessionManager = require('./sessionManager');
 
 const IS_GKE = process.env.RUNTIME === 'gke';
 
@@ -14,36 +15,37 @@ const backend = IS_GKE
 
 module.exports = function() {
   const router = express.Router();
-  const sessions = new Map();  // projectId → { workerId, workerHost, workerPort }
   const AUTH_TOKEN = process.env.WORKER_AUTH_TOKEN;
 
-  // Reconcile sessions from k8s on startup if in GKE mode
-  if (IS_GKE) {
-    backend.reconcileSessions(sessions).catch(console.error);
-  }
+  // Reconcile sessions on startup
+  (async () => {
+    try {
+      let activeWorkerIds = [];
+      if (backend.listActiveWorkerIds) {
+        activeWorkerIds = await backend.listActiveWorkerIds();
+      }
+      await sessionManager.reconcile(activeWorkerIds);
+    } catch (err) {
+      console.error('[Orchestrator] Reconciliation failed:', err.message);
+    }
+  })();
 
   router.post('/start', async (req, res) => {
     const { projectId, userId, files } = req.body;
-    
-    // sessionKey ensures one pod per user. Fallback to projectId for legacy support.
     const sessionKey = userId || projectId;
     
-    if (!sessionKey) {
-      return res.status(400).json({ error: 'Missing userId or projectId' });
-    }
-    
+    if (!sessionKey) return res.status(400).json({ error: 'Missing userId or projectId' });
     if (!files) return res.status(400).json({ error: 'files required' });
 
-    // ─── Warm Update Logic: Check if a healthy session exists for this user ───
-    if (sessions.has(sessionKey)) {
-      const existing = sessions.get(sessionKey);
+    // ─── Warm Update Logic ───
+    const existing = await sessionManager.getSessionByProject(sessionKey);
+    if (existing) {
       console.log(`[Orchestrator] Existing session found for ${sessionKey}. Verifying health...`);
-      
       try {
-        // 1. Double check: Is the container/pod actually running?
         const isRunning = await backend.isWorkerRunning(existing.workerId);
         if (!isRunning) throw new Error('Worker not running');
 
+        const injectStart = Date.now();
         const injectRes = await fetch(`http://${existing.workerHost}:${existing.workerPort}/__inject`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', 'x-worker-auth': AUTH_TOKEN },
@@ -51,6 +53,7 @@ module.exports = function() {
         });
 
         if (injectRes.ok) {
+          console.log(`[Orchestrator] Warm update for ${existing.workerId} took ${Date.now() - injectStart}ms`);
           return res.json({ 
             workerId: existing.workerId, 
             previewUrl: `http://localhost:${process.env.WORKER_PORT || 3001}/api/preview/proxy/${existing.workerId}/`,
@@ -59,16 +62,8 @@ module.exports = function() {
         }
       } catch (err) {
         console.warn(`[Orchestrator] Session health check failed for ${existing.workerId}: ${err.message}`);
-        sessions.delete(sessionKey);
-        try {
-          if (IS_GKE) backend.deletePreviewPod(existing.workerId).catch(() => {});
-          else backend.deleteLocalWorker(existing.workerId).catch(() => {});
-        } catch (e) {}
-        
-        return res.json({ 
-          status: 'expired', 
-          message: 'Preview container was recycled due to inactivity. Re-booting...' 
-        });
+        await sessionManager.deleteSession(existing.workerId);
+        // Fall through to cold start
       }
     }
 
@@ -82,9 +77,6 @@ module.exports = function() {
         });
       }
     }
-
-    let isActive = true;
-    req.on('close', () => { isActive = false; });
 
     try {
       const sessionId = crypto.randomBytes(8).toString('hex');
@@ -102,25 +94,22 @@ module.exports = function() {
         await backend.waitForWorkerReady(workerPort);
       }
 
-      if (!isActive) {
-        if (IS_GKE) backend.deletePreviewPod(workerId).catch(() => {});
-        else backend.deleteLocalWorker(workerId).catch(() => {});
-        return;
-      }
-
-      // Inject files into the running pod/container
+      // Inject files
       const injectRes = await fetch(`http://${workerHost}:${workerPort}/__inject`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-worker-auth': AUTH_TOKEN
-        },
+        headers: { 'Content-Type': 'application/json', 'x-worker-auth': AUTH_TOKEN },
         body: JSON.stringify({ files })
       });
 
       if (!injectRes.ok) throw new Error(`Inject failed: ${await injectRes.text()}`);
 
-      sessions.set(sessionKey, { workerId, workerHost, workerPort, projectId, userId });
+      await sessionManager.setSession(sessionKey, { 
+        workerId, 
+        workerHost, 
+        workerPort, 
+        projectId: sessionKey, 
+        userId 
+      });
       
       res.json({ 
         workerId, 
@@ -138,25 +127,23 @@ module.exports = function() {
     const { workerId } = req.params;
     const { files, projectId } = req.body;
 
-    const session = [...sessions.values()].find(s => s.workerId === workerId);
+    const session = await sessionManager.getSessionByWorker(workerId);
     if (!session) return res.status(404).json({ error: 'Session not found' });
 
-    // Verify that the projectId matches the session (if provided)
     if (projectId && session.projectId !== projectId) {
       return res.status(403).json({ error: 'Session mismatch' });
     }
 
     try {
+      const injectStart = Date.now();
       const injectRes = await fetch(`http://${session.workerHost}:${session.workerPort}/__inject`, {
         method: 'POST',
-        headers: { 
-          'Content-Type': 'application/json', 
-          'x-worker-auth': AUTH_TOKEN 
-        },
+        headers: { 'Content-Type': 'application/json', 'x-worker-auth': AUTH_TOKEN },
         body: JSON.stringify({ files })
       });
 
       if (!injectRes.ok) throw new Error('Inject failed');
+      console.log(`[Orchestrator] Code patch for ${workerId} took ${Date.now() - injectStart}ms`);
       res.json({ ok: true });
     } catch (err) {
       res.status(500).json({ error: err.message });
@@ -165,75 +152,73 @@ module.exports = function() {
 
   const cleanupHandler = async (req, res) => {
     const { workerId } = req.params;
-    
     try {
       if (IS_GKE) await backend.deletePreviewPod(workerId);
       else await backend.deleteLocalWorker(workerId);
+      await sessionManager.deleteSession(workerId);
     } catch (err) {}
-
-    for (const [pid, s] of sessions) {
-      if (s.workerId === workerId) {
-        sessions.delete(pid);
-        break;
-      }
-    }
-
     res.json({ ok: true });
   };
 
   router.delete('/:workerId', cleanupHandler);
   router.post('/:workerId/delete', cleanupHandler);
 
-  router.get('/stats', (req, res) => {
+  router.get('/stats', async (req, res) => {
+    const sessions = await sessionManager.listSessions();
     res.json({
       runtime: IS_GKE ? 'gke' : 'local',
-      activeSessions: sessions.size,
-      sessions: [...sessions.entries()].map(([pid, s]) => ({
-        projectId: pid,
+      activeSessions: sessions.length,
+      sessions: sessions.map(s => ({
+        projectId: s.projectId,
         workerId: s.workerId
       }))
     });
   });
 
-  router.use('/proxy/:workerId', (req, res, next) => {
+  // ─── Singleton Proxy for iframe Previews ───
+  const previewProxy = createProxyMiddleware({
+    target: 'http://placeholder',
+    router: async (req) => {
+      const { workerId } = req.params;
+      const session = await sessionManager.getSessionByWorker(workerId);
+      return session ? `http://${session.workerHost}:${session.workerPort}` : undefined;
+    },
+    changeOrigin: true,
+    ws: false, // Handled globally in server.js
+    logLevel: 'silent',
+    onError: (err, req, res) => {
+      if (err.code !== 'ECONNRESET') {
+        console.error(`[PreviewProxy Error]`, err.message);
+      }
+      if (res && !res.headersSent && res.status) {
+        res.status(502).send(`Worker communication failed: ${err.message}`);
+      }
+    },
+    onProxyRes: (proxyRes) => {
+      proxyRes.headers['cache-control'] = 'no-store, no-cache, must-revalidate, proxy-revalidate';
+      proxyRes.headers['pragma'] = 'no-cache';
+      proxyRes.headers['expires'] = '0';
+      proxyRes.headers['surrogate-control'] = 'no-store';
+    },
+  });
+
+  router.use('/proxy/:workerId', async (req, res, next) => {
     const { workerId } = req.params;
-    const session = [...sessions.values()].find(s => s.workerId === workerId);
+    const session = await sessionManager.getSessionByWorker(workerId);
     
     if (!session) {
       console.warn(`[Proxy] Session NOT FOUND for workerId: ${workerId}`);
       return res.status(404).send('Preview not found or expired');
     }
 
-    console.log(`[Proxy] Routing ${workerId} -> ${session.workerHost}:${session.workerPort}`);
-
-    // Set a cookie so root-level asset requests know which worker to talk to
     res.cookie('preview-worker-id', workerId, { path: '/', httpOnly: true, sameSite: 'lax' });
-
-    createProxyMiddleware({
-      target: `http://${session.workerHost}:${session.workerPort}`,
-      changeOrigin: true,
-      ws: true,
-      logLevel: 'silent',
-      onError: (err, req, res) => {
-        console.error(`[Proxy Error] ${workerId}:`, err.message);
-        if (!res.headersSent) {
-          res.status(502).send(`Worker communication failed: ${err.message}`);
-        }
-      },
-      onProxyRes: (proxyRes) => {
-        // Disable caching for preview assets to ensure 100% fresh UI
-        proxyRes.headers['cache-control'] = 'no-store, no-cache, must-revalidate, proxy-revalidate';
-        proxyRes.headers['pragma'] = 'no-cache';
-        proxyRes.headers['expires'] = '0';
-        proxyRes.headers['surrogate-control'] = 'no-store';
-      },
-    })(req, res, next);
+    previewProxy(req, res, next);
   });
 
   return {
     router,
-    getSessionByWorkerId: (workerId) => {
-      return [...sessions.values()].find(s => s.workerId === workerId);
+    getSessionByWorkerId: async (workerId) => {
+      return await sessionManager.getSessionByWorker(workerId);
     }
   };
 };

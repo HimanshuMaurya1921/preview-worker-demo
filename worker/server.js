@@ -14,38 +14,49 @@ app.use(cors());
 app.use(cookieParser());
 app.use(express.json({ limit: '50mb' }));
 
+const { createProxyMiddleware } = require('http-proxy-middleware');
+
 // Initialize the refactored orchestrator router
 const orchestrator = require('./preview-system/orchestrator/index')();
 app.use('/api/preview', orchestrator.router);
 
+// ─── Singleton Proxy for Global Assets & WebSockets ───
+const mainProxy = createProxyMiddleware({
+  target: 'http://placeholder', // Dynamic target via router
+  router: async (req) => {
+    const workerId = req.cookies['preview-worker-id'] || req.headers['x-preview-worker-id'];
+    if (!workerId) return undefined;
+    const session = await orchestrator.getSessionByWorkerId(workerId);
+    return session ? `http://${session.workerHost}:${session.workerPort}` : undefined;
+  },
+  changeOrigin: true,
+  ws: true,
+  logLevel: 'silent',
+  onError: (err, req, res) => {
+    // Only log if it's not a standard cancellation
+    if (err.code !== 'ECONNRESET') {
+      console.error('[MainProxy Error]', err.message);
+    }
+    if (res && !res.headersSent && res.status) {
+      res.status(502).send('Worker communication failed');
+    }
+  }
+});
+
 // Global Asset Proxy (Sticky Session)
-// If a request hits the root (like /_next/static) but we have a session cookie,
-// forward it to the active worker.
-app.use((req, res, next) => {
+app.use(async (req, res, next) => {
   const workerId = req.cookies['preview-worker-id'];
   if (!workerId) return next();
 
-  const session = orchestrator.getSessionByWorkerId(workerId);
-  if (!session) return next();
-
   // Route assets, API calls, and HTML requests to the worker
-  const isAsset = req.url.startsWith('/_next/') || 
-                  req.url.startsWith('/static/') || 
-                  req.url.startsWith('/api/') || 
-                  req.headers.accept?.includes('text/html');
+  // IMPORTANT: Exclude /api/preview to allow orchestrator routes to work
+  const isAsset = (req.url.startsWith('/_next/') || 
+                   req.url.startsWith('/static/') || 
+                   (req.url.startsWith('/api/') && !req.url.startsWith('/api/preview'))) ||
+                   req.headers.accept?.includes('text/html');
 
   if (isAsset) {
-    const { createProxyMiddleware } = require('http-proxy-middleware');
-    return createProxyMiddleware({
-      target: `http://${session.workerHost}:${session.workerPort}`,
-      changeOrigin: true,
-      ws: true,
-      logLevel: 'silent',
-      onError: (err, req, res) => {
-        console.error('[Proxy Error]', err.message);
-        res.status(502).send('Worker communication failed');
-      }
-    })(req, res, next);
+    return mainProxy(req, res, next);
   }
   
   next();
@@ -64,29 +75,9 @@ const server = app.listen(PORT, () => {
   console.log(`[Worker Orchestrator] Running on port ${PORT} (${process.env.RUNTIME || 'local'} mode)`);
 });
 
-// Handle WebSocket upgrades for HMR
+// Handle WebSocket upgrades for HMR using the singleton proxy
 server.on('upgrade', (req, socket, head) => {
-  // Manual cookie parsing for WebSocket upgrade requests
-  const cookieHeader = req.headers.cookie || '';
-  const cookies = Object.fromEntries(
-    cookieHeader.split(';').map(c => c.trim().split('='))
-  );
-  
-  const workerId = cookies['preview-worker-id'];
-  const session = workerId ? orchestrator.getSessionByWorkerId(workerId) : null;
-
-  if (session) {
-    const { createProxyMiddleware } = require('http-proxy-middleware');
-    const proxy = createProxyMiddleware({
-      target: `http://${session.workerHost}:${session.workerPort}`,
-      ws: true,
-      changeOrigin: true,
-      logLevel: 'silent'
-    });
-    proxy.upgrade(req, socket, head);
-  } else {
-    socket.destroy();
-  }
+  mainProxy.upgrade(req, socket, head);
 });
 
 // Graceful shutdown

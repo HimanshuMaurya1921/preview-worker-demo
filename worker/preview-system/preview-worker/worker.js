@@ -4,6 +4,7 @@ const util = require('util');
 const execAsync = util.promisify(exec);
 const path = require('path');
 const fs = require('fs/promises');
+const fsSync = require('fs');
 const os = require('os');
 const { createProxyMiddleware } = require('http-proxy-middleware');
 
@@ -12,12 +13,76 @@ const PORT = 3000;
 const NEXT_PORT = 3001;
 const WORKSPACE = process.env.WORKSPACE || path.join(os.tmpdir(), `ai-studio-worker`);
 const AUTH_TOKEN = process.env.AUTH_TOKEN || 'local-dev-token';
+const VERSION = "1.0.2"; 
 
 // ─── State ────────────────────────────────────────────────────────────────────
 let nextReady = false;
 let nextProc;
 
+// ─── Next.js Process Management ───────────────────────────────────────────────
+function startNextServer(workDir) {
+  const nextBin = path.join(workDir, 'node_modules', '.bin', 'next');
+  if (!fsSync.existsSync(nextBin)) {
+    console.error(`[Worker] Next.js binary NOT FOUND at ${nextBin}`);
+    return;
+  }
+
+  console.log(`[Worker] Starting Next.js dev server in ${workDir}...`);
+  nextProc = spawn(nextBin, ['dev', '-p', NEXT_PORT.toString()], {
+    cwd: workDir,
+    env: { 
+      ...process.env, 
+      NODE_ENV: 'development',
+      NEXT_TELEMETRY_DISABLED: '1'
+    }
+  });
+
+  nextProc.stdout.on('data', (data) => {
+    const out = data.toString();
+    process.stdout.write(`[Next STDOUT] ${out}`);
+    if (out.includes('Ready') || out.includes('ready in')) {
+      nextReady = true;
+      console.log(`[Worker] NEXT_READY_SIGNAL`);
+    }
+  });
+
+  nextProc.stderr.on('data', (data) => {
+    process.stderr.write(`[Next STDERR] ${data.toString()}`);
+  });
+
+  nextProc.on('close', (code) => {
+    console.log(`[Worker] Next.js process exited with code ${code}`);
+    nextReady = false;
+  });
+}
+
+async function stopNextServer() {
+  if (nextProc) {
+    console.log(`[Worker v${VERSION}] Stopping Next.js dev server and cleaning up processes...`);
+    nextProc.kill('SIGKILL');
+    nextProc = null;
+    nextReady = false;
+  }
+  
+  // Forcefully kill any zombie Next.js processes on the port
+  try {
+    await execAsync(`pkill -9 -f next || true`);
+    // Small delay to allow OS to release the socket
+    await new Promise(resolve => setTimeout(resolve, 500));
+  } catch (e) {}
+}
+
+// Memory Logger Utility
+const logMemory = (tag) => {
+  const mem = process.memoryUsage();
+  const toMB = (bytes) => (bytes / 1024 / 1024).toFixed(2) + 'MB';
+  console.log(`[Memory][${tag}] RSS: ${toMB(mem.rss)} | HeapUsed: ${toMB(mem.heapUsed)} | HeapTotal: ${toMB(mem.heapTotal)} | External: ${toMB(mem.external)}`);
+};
+
 async function prepareWorkspace(workDir) {
+  // Periodic Memory Monitor (every 60s)
+  setInterval(() => logMemory('PERIODIC'), 60000);
+
   const start = Date.now();
   console.log(`[Worker] Preparing workspace in ${workDir}...`);
   await fs.mkdir(workDir, { recursive: true });
@@ -133,11 +198,18 @@ async function main() {
     try {
       // 1. Optional Wipe (for clean project swaps)
       if (wipe) {
-        console.log(`[Worker] Wiping workspace for new project...`);
+        console.log(`[Worker v${VERSION}] Project swap detected. Stopping server and wiping workspace...`);
+        await stopNextServer();
+        
         const entries = await fs.readdir(workDir);
         for (const entry of entries) {
           if (entry === 'node_modules') continue;
           await fs.rm(path.join(workDir, entry), { recursive: true, force: true });
+        }
+        if (global.gc) {
+          logMemory('BEFORE_GC');
+          global.gc();
+          logMemory('AFTER_GC');
         }
       }
 
@@ -233,6 +305,14 @@ export default function PreviewBadge() {
         await fs.writeFile(fullPath, content);
       }
 
+      console.log(`[Worker v${VERSION}] Injected ${Object.keys(flatFiles).length} files (${(totalSize / 1024).toFixed(2)}KB)`);
+      logMemory('POST_INJECTION');
+
+      // 4. If we wiped, we need to restart the server
+      if (wipe) {
+        startNextServer(workDir);
+      }
+
       res.json({ ok: true });
     } catch (e) {
       console.error('Injection error:', e);
@@ -248,65 +328,11 @@ export default function PreviewBadge() {
   }));
 
   const server = app.listen(PORT, () => {
-    console.log(`[Worker] Listening on port ${PORT}`);
-    console.log(`[Worker] Starting Next.js dev server in ${workDir}...`);
-    
-    const nextBin = path.join(workDir, 'node_modules', '.bin', 'next');
-    
-    // Startup Diagnostics
-    console.log(`[Worker] Checking for Next.js binary at: ${nextBin}`);
-    const nextExists = fsSync.existsSync(nextBin);
-    console.log(`[Worker] Next.js binary exists? ${nextExists}`);
-
-    if (!nextExists) {
-      console.error(`[Worker] CRITICAL: Next.js binary NOT FOUND at ${nextBin}`);
-      // Don't exit, let the pod stay alive for debugging
-      return;
-    }
-
-    nextProc = spawn(nextBin, ['dev', '-p', NEXT_PORT.toString()], {
-      cwd: workDir,
-      env: { 
-        ...process.env, 
-        NODE_ENV: 'development',
-        NEXT_TELEMETRY_DISABLED: '1',
-        WATCHPACK_POLLING: 'true'
-      }
-    });
-
-    nextProc.stdout.on('data', (data) => {
-      const out = data.toString();
-      process.stdout.write(`[Next STDOUT] ${out}`);
-      
-      if (out.includes('Ready') || out.includes('ready in')) {
-        nextReady = true;
-        console.log('[Worker] NEXT_READY_SIGNAL');
-      }
-    });
-
-    nextProc.stderr.on('data', (data) => {
-      process.stderr.write(`[Next STDERR] ${data.toString()}`);
-    });
-
-    nextProc.on('exit', (code, signal) => {
-      console.log(`[Worker] Next.js process exited with code ${code} and signal ${signal}`);
-      nextReady = false;
-      // In production/GKE, we might want the pod to restart if Next crashes.
-      // But for debugging "Completed" pods, we can keep the worker alive briefly.
-      if (!process.env.RUNTIME) {
-        process.exit(code !== null ? code : 1);
-      } else {
-        console.warn('[Worker] Next.js exited but keeping worker alive for logs. Pod will become Unready.');
-      }
-    });
-
-    nextProc.on('error', (err) => {
-      console.error(`[Worker] Failed to start Next.js process:`, err);
-      nextReady = false;
-    });
+    console.log(`[Worker v${VERSION}] Listening on port ${PORT}`);
+    startNextServer(WORKSPACE);
   });
 
-  console.log(`[Worker] Startup complete. Waiting for requests...`);
+  console.log(`[Worker v${VERSION}] Startup complete. Waiting for requests...`);
   // Keep-alive promise to ensure main never resolves
   return new Promise(() => {});
 }

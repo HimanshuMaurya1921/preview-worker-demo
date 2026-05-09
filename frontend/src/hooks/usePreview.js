@@ -129,10 +129,8 @@ export function usePreview({ projectId, files, apiBase = '', onReady }) {
       if (id && base) {
         console.log(`[usePreview] Cleaning up worker: ${id}`);
         // Use keepalive to ensure the request finishes even if the tab is closing
-        fetch(`${base}/api/preview/stop`, {
+        fetch(`${base}/api/preview/${id}`, {
           method: 'DELETE',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ workerId: id }),
           keepalive: true
         }).catch(() => {});
       }

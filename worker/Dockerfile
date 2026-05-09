@@ -30,4 +30,4 @@ RUN mkdir -p /workspace
 
 EXPOSE 3000
 
-CMD ["node", "worker.js"]
+CMD ["node", "--expose-gc", "worker.js"]

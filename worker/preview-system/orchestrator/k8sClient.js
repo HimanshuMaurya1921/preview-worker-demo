@@ -34,6 +34,7 @@ async function createPreviewPod(sessionId, projectId) {
       namespace: NAMESPACE,
       labels: {
         app: 'preview-worker',
+        type: 'preview-worker',
         session: sessionId,
         project: safeProjectId
       },
@@ -76,7 +77,7 @@ async function createPreviewPod(sessionId, projectId) {
         env: [
           { name: 'AUTH_TOKEN', value: AUTH_TOKEN },
           { name: 'WORKSPACE', value: '/workspace' },
-          { name: 'NODE_OPTIONS', value: '--max-old-space-size=450' },
+          { name: 'NODE_OPTIONS', value: '--max-old-space-size=3072' },
           { name: 'RUNTIME', value: process.env.RUNTIME || 'gke' },
           {
             name: 'POD_NAME',
@@ -88,8 +89,8 @@ async function createPreviewPod(sessionId, projectId) {
           }
         ],
         resources: {
-          requests: { memory: '350Mi', cpu: '250m' },
-          limits:   { memory: '600Mi', cpu: '1000m' }
+          requests: { memory: '3Gi', cpu: '1000m' },
+          limits:   { memory: '4Gi', cpu: '1000m' }
         },
 
         // Readiness probe: k8s will not send traffic until this returns 200
@@ -122,7 +123,7 @@ async function createPreviewPod(sessionId, projectId) {
         name: 'workspace',
         emptyDir: {
           medium: 'Memory',
-          sizeLimit: '512Mi'
+          sizeLimit: '4Gi'
         }
       }]
     }
@@ -205,37 +206,20 @@ async function isWorkerRunning(podName) {
   }
 }
 
-// ─── Reconcile sessions on orchestrator restart ───────────────────────────────
-async function reconcileSessions(sessions) {
+// ─── List all active worker IDs ───────────────────────────────────────────────
+async function listActiveWorkerIds() {
   try {
     const { body } = await coreApi.listNamespacedPod(
       NAMESPACE,
       undefined, undefined, undefined, undefined,
       'app=preview-worker'
     );
-
-    let count = 0;
-    for (const pod of body.items) {
-      const projectId = pod.metadata.labels?.project;
-      const podName = pod.metadata.name;
-      const phase = pod.status?.phase;
-      const ip = pod.status?.podIP;
-
-      if (projectId && ip && (phase === 'Running' || phase === 'Pending')) {
-        // Must store as object to match orchestrator/index.js expectations
-        sessions.set(projectId, {
-          workerId: podName,
-          workerHost: ip,
-          workerPort: 3000,
-          projectId: projectId
-        });
-        count++;
-      }
-    }
-
-    console.log(`[k8s] Reconciled ${count} sessions from cluster`);
+    return body.items
+      .filter(p => ['Running', 'Pending'].includes(p.status?.phase))
+      .map(p => p.metadata.name);
   } catch (err) {
-    console.error('[k8s] Reconcile failed:', err.message);
+    console.error('[k8s] Failed to list pods:', err.message);
+    throw err; // Throw instead of returning [] to prevent accidental Redis wipes
   }
 }
 
@@ -245,6 +229,6 @@ module.exports = {
   deletePreviewPod,
   getPodIP,
   getClusterCapacity,
-  reconcileSessions,
-  isWorkerRunning
+  isWorkerRunning,
+  listActiveWorkerIds
 };

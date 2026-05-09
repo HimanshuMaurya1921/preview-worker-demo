@@ -83,17 +83,23 @@ kubectl create secret generic preview-worker-secret \
   --from-literal=auth-token=$AUTH_TOKEN \
   --namespace=preview
 
-# 3. Apply RBAC, Network Policy, and CronJob
+# 3. Apply RBAC, Network Policy, and Redis
 kubectl apply -f k8s/rbac.yaml
 kubectl apply -f k8s/network-policy.yaml
-kubectl apply -f k8s/cronjob.yaml
+kubectl apply -f k8s/redis.yaml
 
 # 4. Deploy Orchestrator
 # (Make sure to update the image paths in orchestrator-deployment.yaml)
 kubectl apply -f k8s/orchestrator-deployment.yaml
 ```
 
-## 6. Production Networking Considerations
+## 6. Resource Configuration
+The system is configured for high-performance Next.js workloads:
+- **Requests**: 1 CPU / 2Gi RAM
+- **Limits**: 1 CPU / 3Gi RAM
+- **Storage**: 2Gi `emptyDir` (Memory) for ultra-fast I/O.
+
+## 7. Production Networking Considerations
 
 ### 6.1 Session Affinity (Sticky Sessions)
 The Orchestrator uses a `preview-worker-id` cookie to route Next.js assets to the correct pod.
@@ -103,7 +109,7 @@ The Orchestrator uses a `preview-worker-id` cookie to route Next.js assets to th
 ### 6.2 WebSocket Support
 Next.js HMR uses WebSockets. Your GKE Load Balancer or Ingress must have WebSockets enabled (standard on GCE Ingress, but may require timeout adjustments).
 
-## 7. Management
+## 8. Management
 - **Scale Workers**: Update the `preview-pool` autoscaling limits.
-- **TTL Reaper**: The `preview-ttl-cleanup` CronJob runs every minute to reap sessions older than 5 minutes (default).
 - **Logs**: Use `kubectl logs -n preview <pod-name>` or Google Cloud Logging.
+- **Check Status**: `kubectl get all -n preview`
