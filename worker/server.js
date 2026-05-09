@@ -32,8 +32,26 @@ const mainProxy = createProxyMiddleware({
   changeOrigin: true,
   ws: true,
   logLevel: 'silent',
+  proxyTimeout: 10000, // 10s wait for worker to respond
+  timeout: 10000,      // 10s wait for connection
   onError: (err, req, res) => {
-    // Only log if it's not a standard cancellation
+    // Catch transient connection issues during project swaps
+    const isRetryable = err.code === 'ECONNREFUSED' || err.code === 'ETIMEDOUT' || err.code === 'ECONNRESET';
+    
+    if (isRetryable && !res.headersSent) {
+      if (req.headers.accept?.includes('text/html')) {
+        console.log(`[Proxy] Worker busy or restarting (${err.code}), sending sync helper...`);
+        return res.status(200).send(`
+          <div style="font-family: sans-serif; display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; color: #64748b; background: #f8fafc;">
+            <div style="width: 24px; height: 24px; border: 2px solid #e2e8f0; border-top-color: #3b82f6; border-radius: 50%; animation: spin 0.6s linear infinite; margin-bottom: 12px;"></div>
+            <p style="font-size: 14px; margin: 0;">Syncing changes...</p>
+            <style>@keyframes spin { to { transform: rotate(360deg); } }</style>
+            <script>setTimeout(() => location.reload(), 1000)</script>
+          </div>
+        `);
+      }
+    }
+
     if (err.code !== 'ECONNRESET') {
       console.error('[MainProxy Error]', err.message);
     }
@@ -50,21 +68,21 @@ app.use(async (req, res, next) => {
 
   // Route assets, API calls, and HTML requests to the worker
   // IMPORTANT: Exclude /api/preview to allow orchestrator routes to work
-  const isAsset = (req.url.startsWith('/_next/') || 
-                   req.url.startsWith('/static/') || 
-                   (req.url.startsWith('/api/') && !req.url.startsWith('/api/preview'))) ||
-                   req.headers.accept?.includes('text/html');
+  const isAsset = (req.url.startsWith('/_next/') ||
+    req.url.startsWith('/static/') ||
+    (req.url.startsWith('/api/') && !req.url.startsWith('/api/preview'))) ||
+    req.headers.accept?.includes('text/html');
 
   if (isAsset) {
     return mainProxy(req, res, next);
   }
-  
+
   next();
 });
 
 // Simple healthcheck
 app.get('/health', (req, res) => {
-  res.json({ 
+  res.json({
     status: 'active',
     runtime: process.env.RUNTIME || 'local'
   });

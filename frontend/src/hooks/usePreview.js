@@ -87,6 +87,28 @@ export function usePreview({ projectId, files, apiBase = '', onReady }) {
         
         setWorkerId(data.workerId);
         
+        // ─── Readiness Polling ───
+        // Don't update the iframe URL until the worker explicitly says Next.js is ready
+        let isReady = false;
+        let attempts = 0;
+        const maxAttempts = 30; // 30s max wait
+        
+        while (!isReady && attempts < maxAttempts) {
+          try {
+            const healthRes = await fetch(`${apiBase}/api/preview/proxy/${data.workerId}/__health`);
+            const healthData = await healthRes.json();
+            if (healthData.status === 'ready') {
+              isReady = true;
+            } else {
+              attempts++;
+              await new Promise(r => setTimeout(r, 1000));
+            }
+          } catch (e) {
+            attempts++;
+            await new Promise(r => setTimeout(r, 1000));
+          }
+        }
+
         // Let the UI know if this was a warm update vs cold boot
         const isWarm = data.warm || false;
         
