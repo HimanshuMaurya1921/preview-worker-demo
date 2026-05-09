@@ -39,10 +39,11 @@ export const PreviewFrame = ({ projectId, files, apiBase, onReady, className }) 
 
       {/* Iframe / Content Container */}
       <div className="relative flex-1 w-full bg-gray-50">
-        {loading && !previewUrl && (
-          <div className="absolute inset-0 z-10 flex flex-col items-center justify-center bg-white/90 backdrop-blur-sm transition-opacity duration-300">
-            <div className="w-8 h-8 border-4 border-blue-500 border-t-transparent rounded-full animate-spin mb-4"></div>
-            <p className="text-gray-600 font-medium">Booting Next.js Environment...</p>
+        {loading && (
+          <div className="absolute inset-0 z-30 flex flex-col items-center justify-center bg-white/80 backdrop-blur-md transition-all duration-500">
+            <div className="w-10 h-10 border-4 border-blue-600 border-t-transparent rounded-full animate-spin mb-4 shadow-sm"></div>
+            <p className="text-gray-800 font-semibold tracking-tight">Syncing changes...</p>
+            <p className="text-gray-500 text-xs mt-1">Preparing your Next.js environment</p>
           </div>
         )}
         {previewUrl && (
