@@ -57,10 +57,24 @@ kubectl port-forward svc/orchestrator -n preview 3001:80
 > [!TIP]
 > If you see `ImagePullBackOff`, ensure you have run `kind load docker-image` and that `imagePullPolicy` is set to `IfNotPresent` in your deployment manifest.
 
-## 6. Verification
+## 6. Updating Logic (Hot Reload)
+If you modify the `worker.js` or `server.js` code, follow this sequence to apply changes:
+```bash
+# 1. Rebuild the image
+docker build -t preview-worker:local ./worker
+
+# 2. Reload into KIND
+kind load docker-image preview-worker:local --name ai-studio
+
+# 3. Kill the existing pod (K8s will recreate it with the new image)
+kubectl delete pods -l app=preview-worker -n preview
+```
+
+## 7. Verification
 1. Open the frontend: `cd frontend && npm run dev`
 2. Ensure `VITE_WORKER_URL` is set to `http://localhost:3001`.
 3. Check pod status: `kubectl get pods -n preview`
+4. **Log Check**: `kubectl logs -l app=preview-worker -n preview` (Look for `[Worker v1.0.2]`)
 
 ## 7. Cleanup
 ```bash

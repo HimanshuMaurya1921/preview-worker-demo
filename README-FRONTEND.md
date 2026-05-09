@@ -31,23 +31,29 @@ Always use the `/start` endpoint for both the initial preview and subsequent upd
   }
   ```
 
-### 2.3 Iframe Refresh Strategy
-Next.js Hot Module Replacement (HMR) is fast, but for massive code changes (e.g., changing a layout or adding a route), a full iframe refresh is recommended to reset the React state.
-- **Requirement**: After the `/start` call returns successfully, append a cache-busting parameter to the `previewUrl`.
-- **Example**: `iframe.src = `${session.previewUrl}?v=${Date.now()}`;`
+### 2.3 Iframe Refresh & Readiness Polling
+Next.js Hot Module Replacement (HMR) is fast, but for project swaps, we restart the server. To ensure a smooth transition, the frontend MUST poll for readiness before updating the iframe.
 
-### 2.4 Loading States
-- **Cold Start**: Orchestrator returns `warm: false`. Display a "Booting Container..." message (~11s).
-- **Warm Update**: Orchestrator returns `warm: true`. Display a "Syncing Changes..." message (<1s).
+1. **Step 1**: Call `/api/preview/start`.
+2. **Step 2**: Begin polling `${apiBase}/api/preview/proxy/${workerId}/__health`.
+3. **Step 3**: Only update the iframe `src` when the response returns `status: "ready"`.
+4. **Step 4**: Append a cache-busting parameter: `src = `${previewUrl}?v=${Date.now()}`;`
+
+### 2.4 High-End Loading UX
+To provide a premium feel, use a blurred overlay during the "Syncing" phase:
+- **Condition**: Show overlay whenever the poll is active.
+- **Styling**: `backdrop-blur-md` with a subtle spinner.
+- **Text**: "Syncing changes..." or "Preparing environment..."
 
 ### 2.5 Self-Healing (Session Expiry)
 The Orchestrator may return a `status: "expired"` if the pod was reaped by the TTL cleaner.
 - **Requirement**: If `data.status === "expired"`, the frontend MUST clear the current `workerId` and re-trigger the `/start` call immediately.
-- **User Feedback**: It is recommended to update the loading text to "Session expired, re-booting..." during this phase.
+- **User Feedback**: Update loading text to "Session expired, re-booting..." during this phase.
 
 ## 3. Networking & Security
 - **WebSockets**: The preview URL MUST be loaded in an environment that allows WebSocket connections (for HMR).
 - **Cookies**: The Orchestrator sets a `preview-worker-id` cookie for asset routing. Ensure the frontend does not block `SameSite=Lax` cookies in the iframe.
 
 ## 4. Environment Variables
-- `VITE_WORKER_URL`: The URL of the Orchestrator (e.g., `http://localhost:3001` or `https://preview.yourdomain.com`).
+- `VITE_API_URL`: The URL of the Code Provider Backend.
+- `VITE_WORKER_URL`: The URL of the Orchestrator (e.g., `https://preview.yourdomain.com`).

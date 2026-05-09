@@ -94,10 +94,10 @@ kubectl apply -f k8s/orchestrator-deployment.yaml
 ```
 
 ## 6. Resource Configuration
-The system is configured for high-performance Next.js workloads:
-- **Requests**: 1 CPU / 2Gi RAM
-- **Limits**: 1 CPU / 3Gi RAM
-- **Storage**: 2Gi `emptyDir` (Memory) for ultra-fast I/O.
+The system is optimized for high-density Next.js workloads. We recommend a "bursty" configuration to balance performance and cost:
+- **Requests**: 0.5 CPU / 512Mi RAM
+- **Limits**: 1.0 CPU / 1Gi RAM
+- **Storage**: 2Gi `emptyDir` (Memory) for high-speed workspace I/O.
 
 ## 7. Production Networking Considerations
 

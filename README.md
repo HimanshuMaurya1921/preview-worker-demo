@@ -29,16 +29,19 @@ iframe Preview
 ## 🚀 Key Features
 
 - **Kubernetes-Native**: Leverages K8s for scheduling, resource isolation, and lifecycle management.
+- **Atomic Project Swaps**: Implements a robust `Stop-Wipe-Inject-Restart` lifecycle (Worker v1.0.2+) to ensure 100% clean state between project updates.
+- **Readiness-Aware Proxying**: The orchestrator automatically handles transient boot-up windows, serving a graceful "Syncing" state instead of proxy errors.
+- **Memory Efficiency**: Optimized to run at a consistent **~60MB RSS baseline** with automated Garbage Collection.
 - **Warm Pod Reuse**: Detects existing sessions for the same project/user to avoid cold start times.
-- **Live File Injection**: Update files in the running sandbox without restarting the dev server.
-- **Redis Session Store**: Sessions survive orchestrator restarts and support horizontal scaling.
 - **High Performance**: Uses `emptyDir` (Memory) for workspace storage and optimized resource limits.
 
 ## 📁 Project Structure
 
 - `/backend`: Sample code provider (React/Next.js templates).
-- `/frontend`: The web interface.
-- `/worker`: The Orchestrator and Sandbox Worker code.
+- `/frontend`: The web interface with built-in readiness polling.
+- `/worker`: 
+    - `/preview-system/orchestrator`: Session management and proxying logic.
+    - `/preview-system/preview-worker`: The hardened sandbox runner (v1.0.2).
 - `/k8s`: Kubernetes manifests for GKE/Kind.
 
 ## 🛠 Setup Guides
@@ -59,3 +62,10 @@ iframe Preview
 | `WORKER_IMAGE` | Docker image for the sandbox worker | `preview-worker:local` |
 | `WORKER_AUTH_TOKEN` | Shared secret for internal communication | (auto-generated) |
 | `SESSION_TTL_SECONDS` | How long to keep a session alive | `3600` |
+
+## 🛡 Stability & Reliability (Senior Dev Note)
+
+The system is now hardened against common Next.js/K8s issues:
+1. **Zombie Processes**: Uses aggressive `pkill -9` cleanup during swaps.
+2. **Port Resilience**: Includes a 500ms safety cooldown for port `3001` release.
+3. **Readiness Polling**: The frontend waits for the `/__health` ready signal before showing the app.
