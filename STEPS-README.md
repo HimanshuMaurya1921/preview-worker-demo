@@ -1,21 +1,31 @@
-# WebContainer SDK Integration Guide (Agent-Optimized)
+# 🛠️ WebContainer SDK Integration Guide
 
 > [!NOTE]
-> This document is optimized for both **Engineers** and **AI Coding Agents**. It provides a structured map of the runtime architecture and clear extension points for modification.
+> This document is a technical blueprint optimized for both **Engineers** and **AI Coding Agents**. It maps the runtime architecture and defines clear extension points for customization.
 
 ---
 
 ## 🏗️ Architecture Overview
 
-The runtime operates on a **Base + Patch** model to achieve sub-3s boot times.
+The runtime utilizes a **Base + Patch** model to achieve lightning-fast boot times by minimizing filesystem operations at startup.
 
 ```mermaid
 graph TD
-    A[Snapshot Generation] -->|Binary Chunks| B[Public/Snapshot Assets]
-    B -->|Fetch + OPFS Cache| C[Snapshot Loader]
-    C -->|assembleTree| D[WebContainer.mount]
-    E[AI Generated Files] -->|patch| F[AI Output Normalizer]
-    F -->|Validation & Sanitization| G[WebContainer.fs.writeFile]
+    subgraph Build Time
+        A[Snapshot Generation] -->|Binary Chunks| B[Public/Snapshot Assets]
+    end
+
+    subgraph Runtime Boot
+        B -->|Parallel Fetch| C[Snapshot Loader]
+        C -->|OPFS Cache Check| C
+        C -->|assembleTree| D[WebContainer.mount]
+    end
+
+    subgraph AI Interaction
+        E[AI Generated Files] -->|patch| F[AI Output Normalizer]
+        F -->|Validation & Sanitization| G[WebContainer.fs.writeFile]
+    end
+
     D --> H[Next.js Dev Server]
     G -->|HMR Update| H
 ```
@@ -24,93 +34,64 @@ graph TD
 
 ## 📂 File Responsibility Map
 
-| File Path | Responsibility | Modification Trigger |
+| File Path | Primary Responsibility | Modification Trigger |
 | :--- | :--- | :--- |
-| `webcontainer-client.js` | Lifecycle management (boot, spawn, reset). | Changing dev server port or spawn command. |
-| `snapshot-loader.js` | Binary chunk orchestration & OPFS caching. | Changing chunk asset location or caching logic. |
-| `ai-output-normalizer.js` | Security guardrails & code sanitization. | Adding forbidden files or new regex import rules. |
-| `useWebContainer.js` | React state binding and proactive boot. | Adding new status states or custom error handling. |
-| `generate-binary-chunks.js`| Build-time snapshot creation. | Changing pruning rules for node_modules. |
+| `webcontainer-client.js` | Lifecycle (boot, spawn, reset). | Changing dev server port or start command. |
+| `snapshot-loader.js` | Binary orchestration & OPFS caching. | Changing chunk locations or caching logic. |
+| `ai-output-normalizer.js` | Security & code sanitization. | Adding forbidden files or regex import rules. |
+| `useWebContainer.js` | React bindings & proactive boot. | Adding new states or custom error handling. |
+| `generate-binary-chunks.js`| Build-time snapshot creation. | Updating dependency pruning rules. |
 
 ---
 
 ## 🔧 AI Agent Instruction Set (Extension Points)
 
-### 1. Adding a Restricted File (Guardrails)
-To prevent the AI from modifying a specific file, modify `ai-output-normalizer.js`:
+### 🛡️ 1. Strengthening Guardrails
+To prevent the AI from modifying a specific file, update the `FORBIDDEN_FILES` array in `ai-output-normalizer.js`:
 ```javascript
-// Add to FORBIDDEN_FILES array
-const FORBIDDEN_FILES = [..., 'sensitive-config.json'];
+// Example: Protecting a new security config
+const FORBIDDEN_FILES = [..., 'security-policy.json'];
 ```
 
-### 2. Adding a New Code Sanitization Rule
-To modify AI-generated code before it hits the filesystem, update the `normalizeContent` method in `ai-output-normalizer.js`:
+### 🧹 2. Custom Code Sanitization
+Modify AI-generated code before it reaches the container by updating the `normalizeContent` method:
 ```javascript
 normalizeContent(content) {
-  // Example: Replace hardcoded API keys or fix broken imports
-  return content.replace(/pattern/g, 'replacement');
+  // Example: Auto-fixing common AI import errors
+  return content.replace(/from 'react-icons\/(.*)'/g, "from 'lucide-react'");
 }
 ```
 
-### 3. Modifying the Dev Server Command
-To change how Next.js starts (e.g., adding flags), update `webcontainer-client.js`:
+### ⚙️ 3. Tuning the Dev Server
+To adjust how the Next.js server starts, modify the `startDevServer` method in `webcontainer-client.js`:
 ```javascript
-// Modify the jsh command in startDevServer
-const process = await this.instance.spawn('jsh', ['-c', 'node ./node_modules/next/dist/bin/next dev --port 3001']);
+// Adding a custom port and experimental flags
+const process = await this.instance.spawn('jsh', [
+  '-c', 
+  'node ./node_modules/next/dist/bin/next dev --port 3001 --turbo'
+]);
 ```
 
 ---
 
-## 📡 Backend Integration Specs
+## 🛑 Critical Constraints
 
-The runtime expects a flat file map from the AI generation backend.
-
-**Protocol Schema:**
-```typescript
-interface AIResponse {
-  files: {
-    [path: string]: string; // Key: Relative Path, Value: File Content
-  }
-}
-```
-
-**Normalization Requirement:**
-Paths should be relative to the project root (e.g., `app/page.js`, not `/app/page.js`).
+1.  **Immutability Strategy**: The runtime is optimized for snapshot reuse. **DO NOT** attempt to run `npm install` inside the WebContainer at runtime; use the pre-built `node_modules` layer.
+2.  **Environment Security**: The hosting environment **MUST** serve `COOP` (Cross-Origin-Opener-Policy) and `COEP` (Cross-Origin-Embedder-Policy) headers to enable `SharedArrayBuffer`.
+3.  **Path Consistency**: The AI backend must provide paths relative to the project root (e.g., `app/page.js`).
 
 ---
 
-## 🛠️ Build-Time Snapshot Configuration
+## 🤖 Context Injection (For Agents)
 
-If you add new core dependencies (e.g., `framer-motion`), you must re-generate the snapshot:
+When working with an AI Agent (Cursor, Windsurf, Antigravity), provide these files as context for optimal results:
 
-1. Update `template/package.json`.
-2. Run `npm install` inside `template/`.
-3. Execute:
-   ```bash
-   node packages/webcontainer-runtime/scripts/generate-binary-chunks.js
-   ```
+- **Core Lifecycle**: `packages/webcontainer-runtime/src/lib/webcontainer-client.js`
+- **Security Logic**: `packages/webcontainer-runtime/src/lib/ai-output-normalizer.js`
+- **Frontend Hook**: `packages/webcontainer-runtime/src/hooks/useWebContainer.js`
+- **Snapshot Logic**: `packages/webcontainer-runtime/src/lib/snapshot-loader.js`
 
----
+> [!TIP]
+> **Recommended Agent Prompt:**
+> "Analyze the provided WebContainer runtime context. Adhere to the security constraints in `ai-output-normalizer.js` and ensure all filesystem writes are relative to the root. Do not suggest runtime `npm install` commands."
 
-## 🛑 Critical Constraints for Agents
-
-1. **NO Arbitrary npm installs**: The runtime is optimized for snapshot reuse. Do not attempt to run `npm install` inside the WebContainer at runtime.
-2. **SharedArrayBuffer Requirement**: The hosting environment MUST serve COOP/COEP headers. If the runtime fails to boot, verify headers in the Network tab.
-3. **Binary Integrity**: Do not modify `.wasm` chunks manually. Always use the generation script.
-
----
-
-## 🤖 Context Injection Map (For AI Agents)
-
-If you are passing this project to an in-IDE AI Agent (like Cursor, Windsurf, or Antigravity), provide the following files as context to ensure it understands the runtime logic perfectly:
-
-| Priority | File Path | Why? |
-| :--- | :--- | :--- |
-| **High** | `packages/webcontainer-runtime/src/lib/webcontainer-client.js` | Core lifecycle and process spawning logic. |
-| **High** | `packages/webcontainer-runtime/src/lib/ai-output-normalizer.js` | Critical for understanding security guardrails. |
-| **Med** | `packages/webcontainer-runtime/src/hooks/useWebContainer.js` | Explains how the frontend binds to the runtime. |
-| **Med** | `packages/webcontainer-runtime/src/lib/snapshot-loader.js` | Understanding the binary chunking & OPFS system. |
-| **Low** | `packages/webcontainer-runtime/scripts/generate-binary-chunks.js` | Only needed for build-time snapshot changes. |
-
-**Recommended Prompt for Agent:**
-> "I am working with an optimized WebContainer-based AI runtime. Use the provided context files to understand how snapshots are restored and how AI-generated files are normalized before being written to the filesystem. Adhere to the security constraints in `ai-output-normalizer.js`."
