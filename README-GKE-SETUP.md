@@ -59,11 +59,11 @@ export WORKER_IMAGE="${REGION}-docker.pkg.dev/${PROJECT_ID}/ai-studio/preview-wo
 export ORCH_IMAGE="${REGION}-docker.pkg.dev/${PROJECT_ID}/ai-studio/orchestrator:latest"
 
 # Build and Push Worker
-docker build --platform linux/amd64 -t $WORKER_IMAGE ./worker
+docker build --platform linux/amd64 -t $WORKER_IMAGE ./preview-worker
 docker push $WORKER_IMAGE
 
 # Build and Push Orchestrator
-docker build --platform linux/amd64 -t $ORCH_IMAGE ./worker --file worker/Dockerfile.orchestrator
+docker build --platform linux/amd64 -t $ORCH_IMAGE ./orchestrator
 docker push $ORCH_IMAGE
 ```
 

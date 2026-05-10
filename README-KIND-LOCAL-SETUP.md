@@ -17,10 +17,10 @@ kind create cluster --name ai-studio --config kind-config.yaml
 Build and load the local images into the KIND nodes:
 ```bash
 # Build Worker
-docker build -t preview-worker:local ./worker
+docker build -t preview-worker:local ./preview-worker
 
 # Build Orchestrator
-docker build -t orchestrator:local -f ./worker/Dockerfile.orchestrator ./worker
+docker build -t orchestrator:local ./orchestrator
 
 # Load into KIND (IMPORTANT: This makes images available to the cluster)
 kind load docker-image preview-worker:local --name ai-studio
@@ -61,7 +61,7 @@ kubectl port-forward svc/orchestrator -n preview 3001:80
 If you modify the `worker.js` or `server.js` code, follow this sequence to apply changes:
 ```bash
 # 1. Rebuild the image
-docker build -t preview-worker:local ./worker
+docker build -t preview-worker:local ./preview-worker
 
 # 2. Reload into KIND
 kind load docker-image preview-worker:local --name ai-studio

@@ -1,9 +1,9 @@
 {
-  "name": "ai-studio-worker",
+  "name": "ai-studio-orchestrator",
   "version": "1.0.0",
-  "main": "server.js",
+  "main": "src/server.js",
   "scripts": {
-    "start": "node server.js"
+    "start": "node src/server.js"
   },
   "dependencies": {
     "@kubernetes/client-node": "^0.21.0",

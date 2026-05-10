@@ -10,7 +10,7 @@ COPY package.json ./
 RUN npm install
 
 # Copy the Next.js template
-COPY preview-system/preview-worker/template ./template
+COPY template ./template
 
 # Pre-install Next.js dependencies inside the template
 # This runs during image build so workers don't npm install at runtime
@@ -21,7 +21,7 @@ RUN npm install
 WORKDIR /app
 
 # Copy worker server files
-COPY preview-system/preview-worker/worker.js ./
+COPY worker.js ./
 
 # Create workspace directory
 # In GKE this gets replaced by an emptyDir volume

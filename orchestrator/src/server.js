@@ -17,7 +17,7 @@ app.use(express.json({ limit: '50mb' }));
 const { createProxyMiddleware } = require('http-proxy-middleware');
 
 // Initialize the refactored orchestrator router
-const orchestrator = require('./preview-system/orchestrator/index')();
+const orchestrator = require('./index')();
 app.use('/api/preview', orchestrator.router);
 
 // ─── Singleton Proxy for Global Assets & WebSockets ───

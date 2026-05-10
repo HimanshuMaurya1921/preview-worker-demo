@@ -39,9 +39,8 @@ iframe Preview
 
 - `/backend`: Sample code provider (React/Next.js templates).
 - `/frontend`: The web interface with built-in readiness polling.
-- `/worker`: 
-    - `/preview-system/orchestrator`: Session management and proxying logic.
-    - `/preview-system/preview-worker`: The hardened sandbox runner (v1.0.2).
+- `/orchestrator`: Session management and proxying logic.
+- `/preview-worker`: The hardened sandbox runner (v1.0.2).
 - `/k8s`: Kubernetes manifests for GKE/Kind.
 
 ## 🛠 Setup Guides
